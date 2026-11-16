@@ -2,6 +2,7 @@ package app
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,4 +126,74 @@ func TestSimulatorLoop(t *testing.T) {
 	waitScreen("DMM")
 	a.SetView("scope")
 	waitScreen("OSC")
+}
+
+// TestSweep measures the simulator's RC filter, 10 kHz to the -3 dB point,
+// and checks that the settings come back.
+func TestSweep(t *testing.T) {
+	events := make(chan SweepEvent, 100)
+	a := New(func(event string, data any) {
+		if e, ok := data.(SweepEvent); ok && event == "sweep" {
+			events <- e
+		}
+	})
+	if _, err := a.Connect("sim"); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Disconnect()
+	before := map[string]string{}
+	queries := []string{":FUNCtion:FREQuency?", ":FUNCtion:AMPLitude?", ":CH1:SCALe?", ":CH2:SCALe?", ":HORizontal:SCALe?", ":TRIGger:SWEep?"}
+	for _, q := range queries {
+		r, err := a.Console(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[q] = r.Reply
+	}
+
+	if err := a.StartSweep(SweepConfig{Start: 1000, Stop: 100e3, PerDecade: 2, Amp: 2, Average: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.StartSweep(SweepConfig{Start: 1000, Stop: 100e3, PerDecade: 2, Amp: 2}); err == nil {
+		t.Error("a second sweep started")
+	}
+	var points []SweepPoint
+	timeout := time.After(30 * time.Second)
+	for done := false; !done; {
+		select {
+		case e := <-events:
+			if e.Point != nil {
+				points = append(points, *e.Point)
+			}
+			if e.State == "error" || e.State == "stopped" {
+				t.Fatalf("sweep %s: %s", e.State, e.Error)
+			}
+			done = e.State == "done"
+		case <-timeout:
+			t.Fatal("sweep did not finish")
+		}
+	}
+	if len(points) != 5 {
+		t.Fatalf("%d points, want 5", len(points))
+	}
+	for _, p := range points {
+		x := p.Freq / 10e3
+		gain, phase := 1/math.Sqrt(1+x*x), -math.Atan(x)*180/math.Pi
+		if p.Gain == nil || p.Phase == nil {
+			t.Errorf("%g Hz: no result, %s", p.Freq, p.Note)
+			continue
+		}
+		// The simulator's discrete filter lags about a degree more.
+		if math.Abs(*p.Gain/gain-1) > 0.03 || math.Abs(*p.Phase-phase) > 2.5 {
+			t.Errorf("%g Hz: gain %.3f phase %.1f, want %.3f %.1f", p.Freq, *p.Gain, *p.Phase, gain, phase)
+		}
+	}
+	for _, q := range queries {
+		r, _ := a.Console(q)
+		x, err1 := strconv.ParseFloat(r.Reply, 64)
+		y, err2 := strconv.ParseFloat(before[q], 64)
+		if r.Reply != before[q] && (err1 != nil || err2 != nil || math.Abs(x/y-1) > 1e-9) {
+			t.Errorf("%s = %q after the sweep, was %q", q, r.Reply, before[q])
+		}
+	}
 }

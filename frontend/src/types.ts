@@ -87,3 +87,29 @@ export interface ConsoleResult {
   bytes: number
   ms: number
 }
+
+export interface SweepConfig {
+  start: number
+  stop: number
+  perDecade: number
+  amp: number // generator Vpp
+  average: number
+}
+
+export interface SweepPoint {
+  freq: number
+  gain: number | null // CH2/CH1
+  phase: number | null // degrees, negative when CH2 lags
+  in: number | null // AC RMS, volts
+  out: number | null
+  note: string
+}
+
+export interface SweepEvent {
+  state: 'running' | 'done' | 'stopped' | 'error'
+  index: number
+  total: number
+  freq: number
+  point: SweepPoint | null
+  error: string
+}

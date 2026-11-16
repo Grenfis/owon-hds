@@ -79,6 +79,8 @@ func call(w http.ResponseWriter, r *http.Request, a *app.App) {
 	reply(result, err)
 }
 
+const framesQueued = 8
+
 // hub fans events out to the browser over server-sent events.
 type hub struct {
 	mu      sync.Mutex
@@ -93,9 +95,16 @@ func (h *hub) emit(event string, data any) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.clients {
+		// A slow page skips frames instead of stalling the loop. They leave
+		// room for the other events, which are small and must all arrive:
+		// a lost "sweep" event would leave the page waiting for a sweep
+		// that has ended.
+		if event == "frame" && len(c) >= framesQueued {
+			continue
+		}
 		select {
 		case c <- b:
-		default: // a slow page skips frames instead of stalling the loop
+		default:
 		}
 	}
 }
@@ -103,7 +112,7 @@ func (h *hub) emit(event string, data any) {
 func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	c := make(chan []byte, 16)
+	c := make(chan []byte, 256)
 	h.mu.Lock()
 	h.clients[c] = true
 	h.mu.Unlock()

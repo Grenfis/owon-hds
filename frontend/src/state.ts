@@ -1,7 +1,7 @@
 import { reactive, ref, shallowRef } from 'vue'
 import { call, on } from './api'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
-import type { Frame, GenState, LogEntry, Status } from './types'
+import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
 export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
 export const frame = shallowRef<Frame | null>(null)
@@ -97,6 +97,33 @@ export async function readGen() {
   if (g.output != null) gen.output = g.output
 }
 
+// The last frequency response sweep. It lives here rather than in its panel,
+// so that hiding the panel keeps the result.
+export const sweep = reactive({
+  state: 'idle' as 'idle' | SweepEvent['state'],
+  index: 0,
+  total: 0,
+  freq: 0,
+  start: 0,
+  stop: 0,
+  points: [] as SweepPoint[],
+  error: '',
+})
+
+export async function startSweep(cfg: SweepConfig) {
+  Object.assign(sweep, { state: 'running', index: 0, total: 0, freq: 0, start: cfg.start, stop: cfg.stop, points: [], error: '' })
+  try {
+    await call('StartSweep', cfg)
+  } catch (e: any) {
+    sweep.state = 'error'
+    sweep.error = String(e.message ?? e)
+  }
+}
+
+export function stopSweep() {
+  call('StopSweep').catch(() => {})
+}
+
 export async function connect(mode: 'usb' | 'sim') {
   lastError.value = ''
   try {
@@ -125,6 +152,13 @@ export function init() {
   on('frame', (f: Frame) => {
     applyFrame(f)
     frame.value = f
+  })
+  on('sweep', (e: SweepEvent) => {
+    Object.assign(sweep, { state: e.state, index: e.index, total: e.total, freq: e.freq })
+    if (e.point) sweep.points.push(e.point)
+    if (e.state === 'error') sweep.error = e.error
+    // The sweep put the generator back; the panel reads it again to be sure.
+    if (e.state !== 'running') readGen().catch(() => {})
   })
   on('log', (e: LogEntry) => {
     logs.value.push(e)

@@ -311,6 +311,44 @@ func Relate(a, b Measurements, period, dt float64) Pair {
 	return p
 }
 
+// Response is the gain and phase of one channel against another at a known
+// frequency, as a frequency response sweep measures them.
+type Response struct {
+	Gain  float64
+	Phase float64 // degrees, negative when the second channel lags
+	// Freq is the frequency of the first channel from its rising edges on
+	// the screen, so that a screen taken at another frequency shows.
+	Freq float64
+}
+
+// Respond takes the fundamentals of a and b at f over the whole periods of f
+// on the screen. With the frequency known, b needs no edges of its own, so
+// the output of a filter deep in its stopband still has a gain and a phase.
+// It returns false when the screen holds fewer than two periods.
+func Respond(a, b Measurements, f, dt float64) (Response, bool) {
+	var r Response
+	n := len(a.v)
+	if n == 0 || len(b.v) != n || f <= 0 || dt <= 0 {
+		return r, false
+	}
+	periods := math.Floor(float64(n) * dt * f)
+	if periods < 2 {
+		return r, false
+	}
+	m := min(n, int(math.Round(periods/(f*dt))))
+	w := 2 * math.Pi * f * dt
+	fa, fb := fundamental(a.v, 0, m, w), fundamental(b.v, 0, m, w)
+	if cmplx.Abs(fa) == 0 {
+		return r, false
+	}
+	g := fb / fa
+	r.Gain, r.Phase = cmplx.Abs(g), cmplx.Phase(g)*180/math.Pi
+	if k := len(a.rises); k >= 2 {
+		r.Freq = float64(k-1) / ((a.rises[k-1] - a.rises[0]) * dt)
+	}
+	return r, true
+}
+
 // fundamental returns the complex amplitude at w radians per sample of
 // v[i0:i1] less its mean.
 func fundamental(v []float64, i0, i1 int, w float64) complex128 {

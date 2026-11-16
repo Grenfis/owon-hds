@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { call, saveFile } from './api'
+import BodeView from './components/BodeView.vue'
 import ConsoleView from './components/ConsoleView.vue'
 import DmmView from './components/DmmView.vue'
 import GenPanel from './components/GenPanel.vue'
@@ -9,7 +10,7 @@ import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
 import { stamp } from './format'
-import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status } from './state'
+import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status, sweep } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -20,6 +21,9 @@ const screen = ref<InstanceType<typeof ScopeCanvas>>()
 const FFT_KEY = 'owon.fftShown'
 const fftShown = ref(localStorage.getItem(FFT_KEY) === '1')
 watch(fftShown, (v) => localStorage.setItem(FFT_KEY, v ? '1' : '0'))
+const BODE_KEY = 'owon.bodeShown'
+const bodeShown = ref(localStorage.getItem(BODE_KEY) === '1')
+watch(bodeShown, (v) => localStorage.setItem(BODE_KEY, v ? '1' : '0'))
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -28,6 +32,10 @@ const TABS: { id: View; label: string }[] = [
 ]
 
 const online = computed(() => status.value.connected)
+// While a frequency response sweep runs, it owns the scope and the
+// generator; the controls wait for it, as do the other tabs.
+const sweeping = computed(() => sweep.state === 'running')
+const controls = computed(() => online.value && !sweeping.value)
 const running = computed(() => scope.run !== 'STOP')
 
 const RUN_STATES: Record<string, [string, string]> = {
@@ -95,7 +103,7 @@ onMounted(init)
         <span class="muted">пульт</span>
       </div>
       <nav>
-        <button v-for="t in TABS" :key="t.id" class="tab" :class="{ on: view === t.id }" @click="view = t.id">{{ t.label }}</button>
+        <button v-for="t in TABS" :key="t.id" class="tab" :class="{ on: view === t.id }" :disabled="sweeping && view !== t.id" @click="view = t.id">{{ t.label }}</button>
       </nav>
       <div class="conn">
         <template v-if="online">
@@ -123,14 +131,15 @@ onMounted(init)
     <main v-if="view === 'scope'" class="scope">
       <div class="center">
         <div class="toolbar">
-          <button class="run" :class="running ? 'running' : 'stopped'" :disabled="!online" @click="set('run', running ? 'STOP' : 'RUN')">
+          <button class="run" :class="running ? 'running' : 'stopped'" :disabled="!controls" @click="set('run', running ? 'STOP' : 'RUN')">
             {{ running ? '■ Стоп' : '▶ Пуск' }}
           </button>
-          <button :disabled="!online" title="Автонастройка масштабов, как кнопка Auto на приборе" @click="set('auto', '')">Авто</button>
-          <button :class="{ primary: frozen }" :disabled="!online" title="Не запрашивать новые кадры; прибор продолжает работать" @click="frozen = !frozen">
+          <button :disabled="!controls" title="Автонастройка масштабов, как кнопка Auto на приборе" @click="set('auto', '')">Авто</button>
+          <button :class="{ primary: frozen }" :disabled="!controls" title="Не запрашивать новые кадры; прибор продолжает работать" @click="frozen = !frozen">
             {{ frozen ? 'Экран заморожен' : 'Заморозить экран' }}
           </button>
           <button :class="{ primary: fftShown }" title="Спектр сигнала (FFT) под осциллограммой" @click="fftShown = !fftShown">Спектр</button>
+          <button :class="{ primary: bodeShown }" title="АЧХ и ФЧХ цепи: генератор перебирает частоты, CH1 на входе цепи, CH2 на выходе" @click="bodeShown = !bodeShown">АЧХ</button>
           <div class="info">
             <span v-if="frame" class="state" :class="runState[1]">{{ runState[0] }}</span>
             <span v-if="frame" class="mono">{{ frame.fps.toFixed(1) }} кадр/с</span>
@@ -140,7 +149,7 @@ onMounted(init)
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
@@ -155,12 +164,13 @@ onMounted(init)
           </div>
         </ScopeCanvas>
         <SpectrumView v-if="fftShown" class="spectrum" :frame="frame" @save="save" />
+        <BodeView v-if="bodeShown" class="spectrum" :online="online" @save="save" />
         <MeasureStrip :frame="frame" />
       </div>
       <aside>
-        <ScopeControls :disabled="!online" />
+        <ScopeControls :disabled="!controls" />
       </aside>
-      <GenPanel class="genpanel" :disabled="!online" />
+      <GenPanel class="genpanel" :disabled="!controls" />
     </main>
 
     <main v-else-if="view === 'dmm'" class="page"><DmmView :disabled="!online" /></main>

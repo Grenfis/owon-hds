@@ -49,6 +49,12 @@ type App struct {
 	view    atomic.Value // "scope", "dmm" or "console"
 	acquire atomic.Bool
 	seq     int64
+
+	// A frequency response sweep: the request waits for the loop, which
+	// runs it in place of the polling.
+	sweepReq  atomic.Pointer[SweepConfig]
+	sweeping  atomic.Bool
+	sweepStop atomic.Bool
 }
 
 func New(emit Emitter) *App {
@@ -72,7 +78,8 @@ func (a *App) Connect(mode string) (Status, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
-	a.cancel, a.done = cancel, make(chan struct{})
+	// The client is ready for calls as soon as Connect returns.
+	a.cancel, a.done, a.client = cancel, make(chan struct{}), c
 	done := a.done
 	a.mu.Unlock()
 	go func() {
@@ -91,6 +98,8 @@ func (a *App) Disconnect() {
 		cancel()
 		<-done
 	}
+	a.sweepReq.Store(nil)
+	a.sweeping.Store(false)
 	a.setStatus(Status{})
 }
 
@@ -182,6 +191,19 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 			}
 			skip = skip || scaleCommand.MatchString(cmd)
 			a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
+		}
+		if cfg := a.sweepReq.Swap(nil); cfg != nil {
+			if !strings.EqualFold(screen, "OSC") {
+				if err := a.send(c, ":MODE OSC"); err != nil {
+					return err
+				}
+				screen = "OSC"
+			}
+			if err := a.runSweep(ctx, c, *cfg); err != nil {
+				return err
+			}
+			skip = true
+			continue
 		}
 		switch a.view.Load() {
 		case "scope":

@@ -241,6 +241,45 @@ func TestRelate(t *testing.T) {
 	}
 }
 
+func TestRespond(t *testing.T) {
+	const n = 600
+	dt := 6e-3 / n
+	// 5.3 periods, so that the screen does not end on a whole period.
+	f := 5.3 / (n * dt)
+	mk := func(amp, lag float64) Measurements {
+		v := make([]float64, n)
+		raw := make([]int, n)
+		for i := range v {
+			// Fixed pseudo-noise of up to a count either way.
+			noise := math.Sin(float64(i)*12.9898) * 43758.5453
+			noise = 2 * (noise - math.Floor(noise) - 0.5)
+			raw[i] = int(math.Round(amp*25*math.Sin(2*math.Pi*f*dt*float64(i)-lag) + noise))
+			v[i] = float64(raw[i]) / 25
+		}
+		return Measure(v, raw, dt)
+	}
+	a := mk(3, 0)
+	// About two counts of signal in a count of noise: no edges of its own.
+	b := mk(0.08, 80*math.Pi/180)
+	r, ok := Respond(a, b, f, dt)
+	if !ok {
+		t.Fatal("no response")
+	}
+	if math.Abs(r.Gain/(0.08/3)-1) > 0.15 {
+		t.Errorf("gain = %g, want %g", r.Gain, 0.08/3)
+	}
+	if math.Abs(r.Phase+80) > 6 {
+		t.Errorf("phase = %g, want −80", r.Phase)
+	}
+	if math.Abs(r.Freq/f-1) > 0.01 {
+		t.Errorf("freq = %g, want %g", r.Freq, f)
+	}
+	// One and a half periods are not enough.
+	if _, ok := Respond(a, b, 1.5/(n*dt), dt); ok {
+		t.Error("response from 1.5 periods")
+	}
+}
+
 func deref(f *float64) any {
 	if f == nil {
 		return nil

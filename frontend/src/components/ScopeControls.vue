@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { TIMEBASES, eng, signed } from '../format'
 import { hasV } from '../cursors'
 import { MATH_OPS, MATH_SCALES, mathUnit, type MathOp } from '../math'
-import { cursors, display, fitMathToScreen, frame, mathTrace, resetCursors, scope, set, setTrigLevel } from '../state'
+import { refFromCSV } from '../ref'
+import { cursors, display, fitMathToScreen, frame, mathTrace, reference, resetCursors, saveReference, scope, set, setTrigLevel } from '../state'
 import ChannelCard from './ChannelCard.vue'
 import ListStepper from './ListStepper.vue'
 import Seg from './Seg.vue'
+import Toggle from './Toggle.vue'
 
 defineProps<{ disabled: boolean }>()
 
@@ -61,6 +63,31 @@ function setMath(op: string) {
   display.math = op as MathOp
   if (was === 'off' && op !== 'off') fitMathToScreen()
 }
+
+const canSave = computed(() => !!frame.value?.channels.some((c) => c.on && c.raw?.length))
+const refSummary = computed(() => {
+  const r = reference.value
+  if (!r) return ''
+  const what = r.timeDiv ? `${eng(r.timeDiv, 'с', 3, true)}/дел` : `${eng(r.t[r.t.length - 1] - r.t[0], 'с', 3)}, точек: ${r.t.length}`
+  return `${r.traces.map((c) => c.name).join(', ')} · ${r.source} · ${what}`
+})
+const refError = ref('')
+const fileInput = ref<HTMLInputElement>()
+
+async function loadCSV(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const r = refFromCSV(await file.text(), file.name)
+  if (typeof r === 'string') {
+    refError.value = r
+    return
+  }
+  refError.value = ''
+  reference.value = r
+  display.ref = true
+}
 </script>
 
 <template>
@@ -92,6 +119,21 @@ function setMath(op: string) {
           <span v-else class="lbl">Включите оба канала</span>
         </template>
       </div>
+    </section>
+
+    <section class="ref">
+      <div class="head">
+        <h3>Опорная</h3>
+        <Toggle v-if="reference" v-model="display.ref" color="var(--text)" title="Показать на экране" />
+      </div>
+      <p v-if="reference" class="src" :title="refSummary">{{ refSummary }}</p>
+      <p v-if="refError" class="err">{{ refError }}</p>
+      <div class="row">
+        <button class="mid" :disabled="!canSave" title="Запомнить каналы и математику с экрана" @click="saveReference(); refError = ''">Запомнить</button>
+        <button class="mid" title="Загрузить из файла CSV: время в секундах в первом столбце, вольты в остальных" @click="fileInput?.click()">Из CSV…</button>
+        <button class="mid ghost" :disabled="!reference" @click="reference = null; refError = ''">Убрать</button>
+      </div>
+      <input ref="fileInput" type="file" accept=".csv,.txt,text/csv,text/plain" hidden @change="loadCSV" />
     </section>
 
     <section>
@@ -179,4 +221,9 @@ h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); te
 .val.wide { width: 76px; }
 .zero { padding: 2px 6px; font-size: 12px; }
 .mid { font-size: 12px; justify-self: start; }
+.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.head h3 { margin: 0; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; }
+.src { margin: 0 0 8px; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.err { margin: 0 0 8px; font-size: 12px; color: var(--err); }
 </style>

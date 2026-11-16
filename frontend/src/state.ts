@@ -3,6 +3,7 @@ import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import { fitMath, mathOf, type MathOp } from './math'
+import { isReference, refFromFrame, type Reference } from './ref'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
 // Screen cursors, kept between runs.
@@ -27,7 +28,7 @@ export const frame = shallowRef<Frame | null>(null)
 // The math channel and the screen mode, kept between runs. The math channel
 // is computed from every frame.
 const DISPLAY_KEY = 'owon.display'
-export const display = reactive({ math: 'off' as MathOp, mathScale: 1, mathOffset: 0, xy: false })
+export const display = reactive({ math: 'off' as MathOp, mathScale: 1, mathOffset: 0, xy: false, ref: true })
 try {
   const d = JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}')
   if (d && typeof d === 'object') Object.assign(display, d)
@@ -42,6 +43,31 @@ export function fitMathToScreen() {
   if (!m) return
   const { scale, offset } = fitMath(m.v)
   Object.assign(display, { mathScale: scale, mathOffset: offset })
+}
+
+// The reference waveform, kept between runs when it fits in the storage.
+const REF_KEY = 'owon.ref'
+export const reference = shallowRef<Reference | null>(null)
+try {
+  const r = JSON.parse(localStorage.getItem(REF_KEY) ?? 'null')
+  if (isReference(r)) reference.value = r
+} catch {}
+watch(reference, (r) => {
+  try {
+    if (r) localStorage.setItem(REF_KEY, JSON.stringify(r))
+    else localStorage.removeItem(REF_KEY)
+  } catch {}
+})
+
+// saveReference keeps the channels and the math trace on the screen now.
+export function saveReference() {
+  const f = frame.value
+  if (!f) return
+  const r = refFromFrame(f, mathTrace.value?.v ?? null, display.math, `кадр ${new Date().toLocaleTimeString('ru-RU')}`)
+  if (r) {
+    reference.value = r
+    display.ref = true
+  }
 }
 export const lastError = ref('')
 export const logs = ref<LogEntry[]>([])

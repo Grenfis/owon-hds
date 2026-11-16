@@ -2,15 +2,17 @@
 // The oscilloscope screen: 12 × 8 divisions, 25 sample counts per division,
 // as on the device. Channel ground markers on the left and the trigger level
 // marker on the right can be dragged, and so can the cursors on the screen
-// and the marker of the math channel. With stretch the screen fills its box,
+// and the marker of the math channel. The reference waveform lies under the
+// live traces. With stretch the screen fills its box,
 // and a division is wider than it is tall. In the X-Y mode the screen is a
 // square of 8 × 8 divisions with CH1 across and CH2 up.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { hasT, hasV, levelAt, sampleAt, snapT, snapV, timeAt, voltsAt } from '../cursors'
 import { eng } from '../format'
 import { mathUnit } from '../math'
-import { cursors, display, mathTrace } from '../state'
-import type { Frame } from '../types'
+import { refAt, type RefName, type Reference } from '../ref'
+import { cursors, display, mathTrace, reference } from '../state'
+import type { Frame, FrameChannel } from '../types'
 
 const props = defineProps<{ frame: Frame | null; scope: Record<string, string>; stretch?: boolean }>()
 const emit = defineEmits<{ offset: [ch: 'ch1' | 'ch2', div: number]; level: [volts: number] }>()
@@ -100,6 +102,7 @@ function draw() {
     if (hover.value) drawHoverXY(g, r, hover.value)
     return
   }
+  if (display.ref && reference.value) drawRef(g, r, reference.value)
   for (const name of ['ch2', 'ch1'] as const) {
     const { ch, on } = chInfo(name)
     const raw = ch?.raw
@@ -157,6 +160,7 @@ function mathY(r: ReturnType<typeof plotRect>, v: number) {
 // samples follow each other. It needs both channels.
 function drawXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
   const a = chInfo('ch1'), b = chInfo('ch2')
+  if (display.ref && reference.value && a.ch && b.ch) drawRefXY(g, r, reference.value, a.ch, b.ch)
   const xs = a.ch?.raw, ys = b.ch?.raw
   if (!a.on || !b.on || !xs || !ys || xs.length < 2 || xs.length !== ys.length) return false
   g.strokeStyle = colors.accent
@@ -168,6 +172,57 @@ function drawXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
   }
   g.stroke()
   return true
+}
+
+const refColor = (name: RefName) => colors[name === 'M' ? 'math' : name.toLowerCase()]
+
+// refY places a value of a reference trace at the scale its source has now.
+function refY(r: ReturnType<typeof plotRect>, name: RefName): ((v: number) => number) | null {
+  if (name === 'M') return (v) => mathY(r, v)
+  const ch = props.frame?.channels.find((c) => c.name === name)
+  if (!ch?.voltsPerDiv) return null
+  return (v) => r.cy - (v / ch.voltsPerDiv + ch.offset / PX) * r.dy
+}
+
+// drawRef draws the reference wide and faint, so that the live trace over it
+// stays readable, at the time base of the live frame.
+function drawRef(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, ref: Reference) {
+  const f = props.frame
+  if (!f?.timeDiv) return
+  const xOf = (t: number) => r.x + (t / f.timeDiv + DIVX / 2 - f.hOffset) * r.dx
+  g.save()
+  g.globalAlpha = 0.35
+  g.lineWidth = 3.5
+  g.lineJoin = 'round'
+  for (const c of ref.traces) {
+    const yOf = refY(r, c.name)
+    if (!yOf) continue
+    g.strokeStyle = refColor(c.name)
+    g.beginPath()
+    c.v.forEach((v, i) => {
+      const x = xOf(ref.t[i]), y = yOf(v)
+      i ? g.lineTo(x, y) : g.moveTo(x, y)
+    })
+    g.stroke()
+  }
+  g.restore()
+}
+
+function drawRefXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, ref: Reference, a: FrameChannel, b: FrameChannel) {
+  const xs = ref.traces.find((c) => c.name === 'CH1')?.v, ys = ref.traces.find((c) => c.name === 'CH2')?.v
+  if (!xs || !ys || !a.voltsPerDiv || !b.voltsPerDiv) return
+  g.save()
+  g.globalAlpha = 0.35
+  g.lineWidth = 3.5
+  g.lineJoin = 'round'
+  g.strokeStyle = colors.accent
+  g.beginPath()
+  xs.forEach((u, i) => {
+    const x = r.cx + (u / a.voltsPerDiv + a.offset / PX) * r.dx, y = r.cy - (ys[i] / b.voltsPerDiv + b.offset / PX) * r.dy
+    i ? g.lineTo(x, y) : g.moveTo(x, y)
+  })
+  g.stroke()
+  g.restore()
 }
 
 function xyLabels(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, ok: boolean) {
@@ -395,7 +450,8 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
   if (!f) return
   const xdiv = (mx - r.x) / r.dx
   const hoff = parseFloat(props.scope['hor.offset']) || 0
-  const rows: [string, string, string][] = [['t', eng((xdiv - DIVX / 2 + hoff) * f.timeDiv, 'с', 4), '#8f97a8']]
+  const t = (xdiv - DIVX / 2 + hoff) * f.timeDiv
+  const rows: [string, string, string][] = [['t', eng(t, 'с', 4), '#8f97a8']]
   const dot = (y: number, color: string) => {
     g.fillStyle = color
     g.beginPath()
@@ -415,6 +471,11 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
     const i = Math.round((xdiv / DIVX) * (mt.v.length - 1))
     rows.push(['M', eng(mt.v[i], mathUnit(display.math), 4), colors.math])
     dot(mathY(r, mt.v[i]), colors.math)
+  }
+  const ref = display.ref ? reference.value : null
+  for (const c of ref?.traces ?? []) {
+    const v = refAt(ref!, c.v, t)
+    if (v != null) rows.push([`оп. ${c.name}`, eng(v, c.name === 'M' ? mathUnit(ref!.math) : 'В', 4), refColor(c.name)])
   }
   tooltip(g, r, mx, rows)
 }
@@ -537,6 +598,7 @@ onMounted(() => {
 onBeforeUnmount(() => ro?.disconnect())
 watch(() => [props.frame, { ...props.scope }, props.stretch], schedule, { deep: false })
 watch([cursors, display], schedule, { deep: true })
+watch(reference, schedule)
 </script>
 
 <template>

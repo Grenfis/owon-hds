@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,29 +43,27 @@ type generator struct {
 
 // Device implements hds.Transport.
 type Device struct {
-	mu        sync.Mutex
-	ch        [2]channel
-	tdiv      float64
-	tdivStr   string
-	hoffset   float64 // divisions; positive moves the trigger point left
-	trigSrc   int
-	trigEdge  string  // RISe or FALl
-	trigLvl   float64 // volts
-	sweep     string  // AUTo, NORMal or SINGle
-	trigCpl   string
-	running   bool
-	acqMode   string
-	depmem    string
-	gen       generator
-	screen    string // OSC, DMM or AG
-	shutdown  string // minutes or UNLIMITED
-	backlight string // seconds or UNLIMITED
-	dmmFunc   string
-	dmmRel    bool
-	last      [2][]int
-	trigged   bool
-	busy      time.Duration // delay of the next waveform query after a scale change or autoset
-	pending   []byte
+	mu       sync.Mutex
+	ch       [2]channel
+	tdiv     float64
+	tdivStr  string
+	hoffset  float64 // divisions; positive moves the trigger point left
+	trigSrc  int
+	trigEdge string  // RISe or FALl
+	trigLvl  float64 // volts
+	sweep    string  // AUTo, NORMal or SINGle
+	trigCpl  string
+	running  bool
+	acqMode  string
+	depmem   string
+	gen      generator
+	screen   string // OSC, DMM or AG
+	dmmFunc  string
+	dmmRel   bool
+	last     [2][]int
+	trigged  bool
+	busy     time.Duration // delay of the next waveform query after a scale change or autoset
+	pending  []byte
 	// Latency is added to every waveform query to mimic the real device.
 	Latency time.Duration
 }
@@ -80,8 +77,8 @@ func New() *Device {
 		tdiv: 200e-6, tdivStr: "200us",
 		trigEdge: "RISe", sweep: "AUTo", trigCpl: "DC",
 		running: true, acqMode: "SAMPle", depmem: "4K",
-		gen:    generator{wave: "SINe", freq: 1e3, amp: 2, duty: 50, symmetry: 50, on: true},
-		screen: "OSC", shutdown: "30", backlight: "UNLIMITED",
+		gen:     generator{wave: "SINe", freq: 1e3, amp: 2, duty: 50, symmetry: 50, on: true},
+		screen:  "OSC",
 		dmmFunc: "DCV",
 		Latency: 20 * time.Millisecond,
 	}
@@ -119,7 +116,7 @@ var keywords = strings.Fields(`CH1 CH2 DISPlay COUPling PROBe SCALe OFFSet HORiz
 	MODe DEPMem DATa WAVe SCReen HEAD TRIGger STATus SINGle EDGe LEVel SOURce SWEep FUNCtion
 	FREQuency PERiod AMPLitude HIGHt LOW SYMMetry WIDTh DTYCycle RISing FALing LOAD CHANnel
 	RUNNing AUToseton MODel MEASurement MAX MIN PKPK VAMP AVERage RMS DMM CONFigure VOLTage
-	CURRent REL RANGe AUTo MEAS HOLD PULSe RAMP SHUTdown TIMe BACKlighttime`)
+	CURRent REL RANGe AUTo MEAS HOLD PULSe RAMP`)
 
 var shortForm = func() map[string]string {
 	m := map[string]string{}
@@ -214,10 +211,6 @@ func (d *Device) query(path string) (string, bool) {
 		return "HDS272S_1", true
 	case "MODE":
 		return d.screen, true
-	case "SHUT:TIM":
-		return limit(d.shutdown, "min"), true
-	case "DISP:BACK":
-		return limit(d.backlight, "s"), true
 	case "HOR:SCAL":
 		return short(d.tdiv), true
 	case "HOR:OFFS":
@@ -271,14 +264,6 @@ func (d *Device) query(path string) (string, bool) {
 	return "", false
 }
 
-// limit prints a time setting as the device does: "30min" or "Unlimited".
-func limit(v, unit string) string {
-	if v == "UNLIMITED" {
-		return "Unlimited"
-	}
-	return v + unit
-}
-
 func (d *Device) chPath(path string) (*channel, string, bool) {
 	for i, name := range []string{"CH1:", "CH2:"} {
 		if rest, ok := strings.CutPrefix(path, name); ok {
@@ -296,25 +281,6 @@ func (d *Device) set(path, arg string) {
 			return 0, false
 		}
 		return f, true
-	}
-	// As on the device: UNLIMITED in capitals, anything else a number.
-	pick := func(dst *string, allowed ...string) {
-		if arg == "UNLIMITED" {
-			*dst = arg
-			return
-		}
-		n := strings.TrimRightFunc(arg, func(r rune) bool { return r < '0' || r > '9' })
-		if slices.Contains(allowed, n) {
-			*dst = n
-		}
-	}
-	switch path {
-	case "SHUT:TIM":
-		pick(&d.shutdown, "10", "30", "60")
-		return
-	case "DISP:BACK":
-		pick(&d.backlight, "30", "60", "120")
-		return
 	}
 	if path == "MODE" {
 		if up == "OSC" || up == "DMM" || up == "AG" {

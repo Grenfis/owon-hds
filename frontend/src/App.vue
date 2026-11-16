@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { call, saveFile } from './api'
 import ConsoleView from './components/ConsoleView.vue'
-import DeviceButtons from './components/DeviceButtons.vue'
 import DmmView from './components/DmmView.vue'
 import GenPanel from './components/GenPanel.vue'
 import MeasureStrip from './components/MeasureStrip.vue'
@@ -100,7 +99,6 @@ onMounted(init)
       </nav>
       <div class="conn">
         <template v-if="online">
-          <DeviceButtons />
           <span class="chip ok" :title="status.detail">
             <span class="dot" />{{ status.mode === 'sim' ? 'Имитатор' : 'USB' }} · <span class="mono">{{ status.idn }}</span>
           </span>

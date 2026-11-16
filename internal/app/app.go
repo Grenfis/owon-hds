@@ -414,33 +414,6 @@ func (a *App) ReadGen() (GenState, error) {
 	return g, nil
 }
 
-// DeviceState holds device settings outside the scope and the generator,
-// in the values the "dev." settings take: "30" or "UNLIMITED".
-type DeviceState struct {
-	Shutdown  string `json:"shutdown"`  // minutes without key presses before power-off
-	Backlight string `json:"backlight"` // seconds without key presses before the screen goes dark
-}
-
-// ReadDevice reads the auto-shutdown and backlight times. A value the device
-// did not report stays empty.
-func (a *App) ReadDevice() (DeviceState, error) {
-	c := a.currentClient()
-	if c == nil {
-		return DeviceState{}, errors.New("нет связи с прибором")
-	}
-	read := func(cmd, unit string) string {
-		s, err := c.Query(cmd)
-		if err != nil {
-			return ""
-		}
-		return strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(s), unit))
-	}
-	return DeviceState{
-		Shutdown:  read(":SHUTdown:TIMe?", "min"),
-		Backlight: read(":DISPlay:BACKlighttime?", "s"),
-	}, nil
-}
-
 type LogEntry struct {
 	Dir  string `json:"dir"` // "out", "in" or "err"
 	Text string `json:"text"`

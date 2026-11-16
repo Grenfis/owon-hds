@@ -75,6 +75,11 @@ export interface GenState {
   output: boolean | null
 }
 
+export interface DeviceState {
+  shutdown: string // minutes or UNLIMITED; empty when unknown
+  backlight: string // seconds or UNLIMITED
+}
+
 export interface LogEntry {
   dir: 'out' | 'in' | 'err'
   text: string

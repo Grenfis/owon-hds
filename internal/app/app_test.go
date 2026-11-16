@@ -126,3 +126,25 @@ func TestSimulatorLoop(t *testing.T) {
 	a.SetView("scope")
 	waitScreen("OSC")
 }
+
+func TestDeviceSettings(t *testing.T) {
+	a := New(func(string, any) {})
+	if _, err := a.Connect("sim"); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Disconnect()
+	for _, kv := range [][2]string{{"dev.shutdown", "unlimited"}, {"dev.backlight", "30"}} {
+		if err := a.Set(kv[0], kv[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var s DeviceState
+	for time.Now().Before(deadline) {
+		if s, _ = a.ReadDevice(); s.Shutdown == "UNLIMITED" && s.Backlight == "30" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("device state %+v", s)
+}

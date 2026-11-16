@@ -67,6 +67,12 @@ var params = func() map[string]param {
 		"dmm.rel":   {cmd: ":DMM:REL %s", kind: kindEnum, enum: onOff},
 		"dmm.auto":  {cmd: ":DMM:AUTo ON", kind: kindNone},
 		"dmm.range": {cmd: ":DMM:RANGe ON", kind: kindNone},
+
+		// The device compares UNLIMITED case-sensitively and reads any other
+		// value as a number: minutes for the shutdown, seconds for the
+		// backlight. Queries answer "30min" or "Unlimited".
+		"dev.shutdown":  {cmd: ":SHUTdown:TIMe %s", kind: kindEnum, enum: []string{"10", "30", "60", "UNLIMITED"}},
+		"dev.backlight": {cmd: ":DISPlay:BACKlighttime %s", kind: kindEnum, enum: []string{"30", "60", "120", "UNLIMITED"}},
 	}
 	for _, ch := range []string{"CH1", "CH2"} {
 		k := strings.ToLower(ch) + "."

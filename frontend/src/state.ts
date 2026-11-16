@@ -1,7 +1,7 @@
 import { reactive, ref, shallowRef } from 'vue'
 import { call, on } from './api'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
-import type { Frame, GenState, LogEntry, Status } from './types'
+import type { DeviceState, Frame, GenState, LogEntry, Status } from './types'
 
 export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
 export const frame = shallowRef<Frame | null>(null)
@@ -25,6 +25,18 @@ export const scope = reactive<Record<string, string>>({
 export const gen = reactive({
   wave: 'SINE', freq: 1000, amp: 1, offset: 0, duty: 50, symmetry: 50, output: false,
 })
+
+// Auto-shutdown and backlight times, read on connect.
+export const dev = reactive<DeviceState>({ shutdown: '', backlight: '' })
+
+export function setDev(key: keyof DeviceState, value: string) {
+  dev[key] = value
+  set(`dev.${key}`, value)
+}
+
+export async function readDev() {
+  Object.assign(dev, await call<DeviceState>('ReadDevice'))
+}
 
 const holdUntil = new Map<string, number>()
 
@@ -103,6 +115,7 @@ export async function connect(mode: 'usb' | 'sim') {
     status.value = await call<Status>('Connect', mode)
     localStorage.setItem('owon.mode', mode)
     await readGen().catch(() => {})
+    await readDev().catch(() => {})
   } catch (e: any) {
     lastError.value = String(e.message ?? e)
   }
@@ -120,7 +133,7 @@ export function init() {
     if (!s.connected) frame.value = null
     // Also after an automatic reconnect: the generator may have been changed
     // on the device meanwhile.
-    else if (!was) readGen().catch(() => {})
+    else if (!was) readGen().then(readDev).catch(() => {})
   })
   on('frame', (f: Frame) => {
     applyFrame(f)
@@ -133,7 +146,7 @@ export function init() {
   call<Status>('GetStatus')
     .then((s) => {
       status.value = s
-      if (s.connected) return readGen()
+      if (s.connected) return readGen().then(readDev)
     })
     .catch(() => {})
 }

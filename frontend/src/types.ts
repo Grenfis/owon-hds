@@ -88,28 +88,40 @@ export interface ConsoleResult {
   ms: number
 }
 
+// A sweep steps the frequency from start to stop hertz at amp, or with mode
+// 'amp' the amplitude from start to stop volts peak to peak at freq.
 export interface SweepConfig {
+  mode?: 'amp'
   start: number
   stop: number
   perDecade: number
-  amp: number // generator Vpp
+  amp?: number // generator Vpp
+  freq?: number // Hz
   average: number
 }
 
 export interface SweepPoint {
   freq: number
+  amp: number // generator Vpp
   gain: number | null // CH2/CH1
   phase: number | null // degrees, negative when CH2 lags
   in: number | null // AC RMS, volts
   out: number | null
+  // A distortion sweep: the harmonics of CH2 from the 2nd on against its
+  // fundamental, and the total distortion of CH2 and CH1.
+  harm: number[] | null
+  thd: number | null
+  thdIn: number | null
   note: string
 }
 
 export interface SweepEvent {
+  mode: string
   state: 'running' | 'done' | 'stopped' | 'error'
   index: number
   total: number
   freq: number
+  amp: number
   point: SweepPoint | null
   error: string
 }

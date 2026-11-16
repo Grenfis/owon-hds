@@ -13,32 +13,47 @@ import (
 	"owon-hds/internal/hds"
 )
 
-// A frequency response sweep: the generator steps through frequencies, CH1
-// sees the input of the circuit and CH2 its output, and each point takes the
-// gain and phase of CH2 against CH1 from their fundamentals.
+// A sweep: CH1 sees the input of a circuit and CH2 its output, and each
+// point takes the gain and phase of CH2 against CH1 from their fundamentals.
+// A frequency response sweep steps the generator through frequencies; a
+// distortion sweep steps it through amplitudes at one frequency and also
+// takes the harmonics of both channels.
 
 type SweepConfig struct {
-	Start     float64 `json:"start"` // Hz
+	// Mode "amp" steps the amplitude from Start to Stop volts peak to peak
+	// at Freq; otherwise the sweep steps the frequency from Start to Stop
+	// hertz at Amp.
+	Mode      string  `json:"mode"`
+	Start     float64 `json:"start"`
 	Stop      float64 `json:"stop"`
 	PerDecade int     `json:"perDecade"`
 	Amp       float64 `json:"amp"`     // generator Vpp
+	Freq      float64 `json:"freq"`    // Hz
 	Average   int     `json:"average"` // screens per point
 }
 
 type SweepPoint struct {
 	Freq  float64  `json:"freq"`
+	Amp   float64  `json:"amp"`   // generator Vpp
 	Gain  *float64 `json:"gain"`  // CH2/CH1; nil when not measured
 	Phase *float64 `json:"phase"` // degrees, negative when CH2 lags
 	In    *float64 `json:"in"`    // AC RMS of CH1, volts
 	Out   *float64 `json:"out"`   // AC RMS of CH2
-	Note  string   `json:"note"`  // why the point is missing
+	// A distortion sweep: the harmonics of CH2 from the 2nd on, each against
+	// its fundamental, and the total distortion of CH2 and of CH1 from them.
+	Harm  []float64 `json:"harm"`
+	Thd   *float64  `json:"thd"`
+	ThdIn *float64  `json:"thdIn"`
+	Note  string    `json:"note"` // why the point is missing
 }
 
 type SweepEvent struct {
+	Mode  string      `json:"mode"`  // as in the config
 	State string      `json:"state"` // "running", "done", "stopped" or "error"
 	Index int         `json:"index"` // points done
 	Total int         `json:"total"`
-	Freq  float64     `json:"freq"` // the frequency being measured
+	Freq  float64     `json:"freq"` // the point being measured
+	Amp   float64     `json:"amp"`
 	Point *SweepPoint `json:"point"`
 	Error string      `json:"error"`
 }
@@ -49,16 +64,21 @@ const sweepMinFreq = 10
 
 // StartSweep starts a sweep; the loop runs it in place of the usual polling.
 func (a *App) StartSweep(cfg SweepConfig) error {
+	amp := cfg.Mode == "amp"
 	switch {
 	case a.currentClient() == nil:
 		return errors.New("нет связи с прибором")
 	case a.sweeping.Load():
 		return errors.New("измерение уже идёт")
-	case !(cfg.Start >= sweepMinFreq && cfg.Stop <= 25e6 && cfg.Stop > cfg.Start):
-		return errors.New("частоты должны быть от 10 Гц до 25 МГц, начальная меньше конечной")
 	case cfg.PerDecade < 1 || cfg.PerDecade > 50:
 		return errors.New("точек на декаду: от 1 до 50")
-	case !(cfg.Amp >= 0.01 && cfg.Amp <= 5):
+	case amp && !(cfg.Freq >= sweepMinFreq && cfg.Freq <= 1e6):
+		return errors.New("частота: от 10 Гц до 1 МГц")
+	case amp && !(cfg.Start >= 0.01 && cfg.Stop <= 5 && cfg.Stop > cfg.Start):
+		return errors.New("размах генератора должен быть от 0.01 до 5 В, начальный меньше конечного")
+	case !amp && !(cfg.Start >= sweepMinFreq && cfg.Stop <= 25e6 && cfg.Stop > cfg.Start):
+		return errors.New("частоты должны быть от 10 Гц до 25 МГц, начальная меньше конечной")
+	case !amp && !(cfg.Amp >= 0.01 && cfg.Amp <= 5):
 		return errors.New("амплитуда генератора: от 0.01 до 5 В")
 	}
 	cfg.Average = min(max(cfg.Average, 1), 8)
@@ -76,9 +96,9 @@ func (a *App) StopSweep() {
 	a.queue.poke()
 }
 
-// sweepFreqs spaces the points evenly on a log scale, rounded to three
+// sweepSteps spaces the points evenly on a log scale, rounded to three
 // significant digits, ends included.
-func sweepFreqs(cfg SweepConfig) []float64 {
+func sweepSteps(cfg SweepConfig) []float64 {
 	decades := math.Log10(cfg.Stop / cfg.Start)
 	n := max(2, int(math.Ceil(decades*float64(cfg.PerDecade)-1e-9))+1)
 	out := make([]float64, 0, n)
@@ -223,9 +243,10 @@ var errStopped = errors.New("остановлено")
 // returns only errors of the connection.
 func (a *App) runSweep(ctx context.Context, c *hds.Client, cfg SweepConfig) error {
 	defer a.sweeping.Store(false)
-	freqs := sweepFreqs(cfg)
+	amp := cfg.Mode == "amp"
+	steps := sweepSteps(cfg)
 	ev := func(e SweepEvent) {
-		e.Total = len(freqs)
+		e.Mode, e.Total = cfg.Mode, len(steps)
 		a.emit("sweep", e)
 	}
 	fail := func(err error) error {
@@ -249,15 +270,24 @@ func (a *App) runSweep(ctx context.Context, c *hds.Client, cfg SweepConfig) erro
 	}
 	restore := restoreCmds(c, f0)
 
+	first := cfg.Amp
+	if amp {
+		first = steps[0]
+	}
 	setup := []string{
-		":FUNCtion SINE", ":FUNCtion:AMPLitude " + formatNumber(cfg.Amp), ":FUNCtion:OFFSet 0", ":CHANnel ON",
+		":FUNCtion SINE", ":FUNCtion:AMPLitude " + formatNumber(first), ":FUNCtion:OFFSet 0", ":CHANnel ON",
 		":CH1:DISPlay ON", ":CH2:DISPlay ON", ":CH1:OFFSet 0", ":CH2:OFFSet 0",
 		":TRIGger:SINGle:EDGe:SOURce CH1", ":TRIGger:SWEep AUTO", ":TRIGger:SINGle:EDGe:LEVel 0.0mv", ":RUNning RUN",
+	}
+	curTB := 0.0
+	if amp {
+		curTB = timebaseFor(cfg.Freq)
+		setup = append(setup, ":FUNCtion:FREQuency "+formatNumber(cfg.Freq), ":HORizontal:SCALe "+timebaseCmd(curTB))
 	}
 	// The input swing is known: up to six divisions of CH1 from the start.
 	probe := hds.ProbeFactor(f0.Channels[0].Probe)
 	for _, v := range vdivs {
-		if cfg.Amp/(v*probe) <= 6 {
+		if first/(v*probe) <= 6 {
 			setup = append(setup, ":CH1:SCALe "+vdivCmd(v*probe))
 			break
 		}
@@ -268,24 +298,35 @@ func (a *App) runSweep(ctx context.Context, c *hds.Client, cfg SweepConfig) erro
 		}
 	}
 
-	state, curTB := "done", 0.0
-	for i, f := range freqs {
-		ev(SweepEvent{State: "running", Index: i, Freq: f})
-		if tb := timebaseFor(f); tb != curTB {
-			if err := a.send(c, ":HORizontal:SCALe "+timebaseCmd(tb)); err != nil {
+	state := "done"
+	for i, x := range steps {
+		f, vpp, tol := x, cfg.Amp, 0.03
+		if amp {
+			f, vpp = cfg.Freq, x
+		}
+		ev(SweepEvent{State: "running", Index: i, Freq: f, Amp: vpp})
+		if amp {
+			if i > 0 {
+				if err := a.send(c, ":FUNCtion:AMPLitude "+formatNumber(vpp)); err != nil {
+					return fail(err)
+				}
+			}
+		} else {
+			if tb := timebaseFor(f); tb != curTB {
+				if err := a.send(c, ":HORizontal:SCALe "+timebaseCmd(tb)); err != nil {
+					return fail(err)
+				}
+				curTB = tb
+			}
+			if err := a.send(c, ":FUNCtion:FREQuency "+formatNumber(f)); err != nil {
 				return fail(err)
 			}
-			curTB = tb
+			// Neighbouring points must not pass for each other.
+			if i+1 < len(steps) {
+				tol = min(tol, (steps[i+1]/f-1)/2)
+			}
 		}
-		if err := a.send(c, ":FUNCtion:FREQuency "+formatNumber(f)); err != nil {
-			return fail(err)
-		}
-		// Neighbouring points must not pass for each other.
-		tol := 0.03
-		if i+1 < len(freqs) {
-			tol = min(tol, (freqs[i+1]/f-1)/2)
-		}
-		p, err := a.measurePoint(ctx, c, f, tol, curTB, cfg.Average)
+		p, err := a.measurePoint(ctx, c, f, tol, curTB, cfg.Average, amp)
 		if errors.Is(err, errStopped) {
 			state = "stopped"
 			break
@@ -293,7 +334,8 @@ func (a *App) runSweep(ctx context.Context, c *hds.Client, cfg SweepConfig) erro
 		if err != nil {
 			return fail(err)
 		}
-		ev(SweepEvent{State: "running", Index: i + 1, Freq: f, Point: &p})
+		p.Amp = vpp
+		ev(SweepEvent{State: "running", Index: i + 1, Freq: f, Amp: vpp, Point: &p})
 	}
 
 	for _, cmd := range restore {
@@ -301,20 +343,25 @@ func (a *App) runSweep(ctx context.Context, c *hds.Client, cfg SweepConfig) erro
 			return fail(err)
 		}
 	}
-	ev(SweepEvent{State: state, Index: len(freqs)})
+	ev(SweepEvent{State: state, Index: len(steps)})
 	return nil
 }
 
-// measurePoint waits for screens of the new frequency and averages their
-// gain and phase. The first screen after the frequency or a scale changed
+// measurePoint waits for screens of the new setting and averages their gain
+// and phase, and with harm the harmonics of both channels. The harmonics are
+// turned to the phase of the fundamental of CH1 on their screen, h times for
+// the h-th, so that they add up from screen to screen while the noise in
+// them averages out. The first screen after the generator or a scale changed
 // may have been taken before, so it does not count; nor does a screen whose
 // CH1 shows another frequency.
-func (a *App) measurePoint(ctx context.Context, c *hds.Client, f, tol, timebase float64, average int) (SweepPoint, error) {
+func (a *App) measurePoint(ctx context.Context, c *hds.Client, f, tol, timebase float64, average int, harm bool) (SweepPoint, error) {
 	p := SweepPoint{Freq: f}
 	screen := time.Duration(timebase * hds.DivsX * float64(time.Second))
 	deadline := time.Now().Add(max(8*time.Second, 10*screen))
 	var sum complex128
 	var in, out float64
+	var fund [2]float64    // the sum of the fundamentals' amplitudes
+	var hs [2][]complex128 // the sum of the turned harmonics
 	n, misses, skip := 0, 0, true
 	for n < average {
 		if ctx.Err() != nil || a.sweepStop.Load() {
@@ -350,9 +397,26 @@ func (a *App) measurePoint(ctx context.Context, c *hds.Client, f, tol, timebase 
 			continue
 		}
 		ch1, ch2 := fr.Channels[0].Meas, fr.Channels[1].Meas
-		r, ok := hds.Respond(ch1, ch2, f, fr.TimeDiv*hds.DivsX/float64(len(fr.Channels[0].Raw)))
+		dt := fr.TimeDiv * hds.DivsX / float64(len(fr.Channels[0].Raw))
+		r, ok := hds.Respond(ch1, ch2, f, dt)
 		if !ok || math.Abs(r.Freq/f-1) > tol {
 			continue
+		}
+		if harm {
+			var turn complex128
+			for k, m := range []hds.Measurements{ch1, ch2} {
+				a1, h, _ := hds.Harmonics(m, f, dt)
+				if k == 0 {
+					turn = cmplx.Conj(a1) / complex(cmplx.Abs(a1), 0)
+				}
+				fund[k] += cmplx.Abs(a1)
+				if hs[k] == nil {
+					hs[k] = make([]complex128, len(h))
+				}
+				for j := range min(len(h), len(hs[k])) {
+					hs[k][j] += h[j] * cmplx.Pow(turn, complex(float64(j+2), 0))
+				}
+			}
 		}
 		sum += cmplx.Rect(r.Gain, r.Phase*math.Pi/180)
 		if ch1.AcRms != nil {
@@ -367,6 +431,19 @@ func (a *App) measurePoint(ctx context.Context, c *hds.Client, f, tol, timebase 
 		g := sum / complex(float64(n), 0)
 		p.Gain, p.Phase = ptr(cmplx.Abs(g)), ptr(cmplx.Phase(g)*180/math.Pi)
 		p.In, p.Out = ptr(in/float64(n)), ptr(out/float64(n))
+		if harm && fund[0] > 0 && fund[1] > 0 {
+			var thd [2]float64
+			for k := range hs {
+				for _, h := range hs[k] {
+					r := cmplx.Abs(h) / fund[k]
+					thd[k] += r * r
+					if k == 1 {
+						p.Harm = append(p.Harm, r)
+					}
+				}
+			}
+			p.ThdIn, p.Thd = ptr(math.Sqrt(thd[0])), ptr(math.Sqrt(thd[1]))
+		}
 	}
 	return p, nil
 }

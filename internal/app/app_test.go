@@ -130,7 +130,10 @@ func TestSimulatorLoop(t *testing.T) {
 
 // TestSweep measures the simulator's RC filter, 10 kHz to the -3 dB point,
 // and checks that the settings come back.
-func TestSweep(t *testing.T) {
+// sweepOnSim runs a sweep on the simulator, checks that it puts the
+// settings back and returns its points.
+func sweepOnSim(t *testing.T, cfg SweepConfig) []SweepPoint {
+	t.Helper()
 	events := make(chan SweepEvent, 100)
 	a := New(func(event string, data any) {
 		if e, ok := data.(SweepEvent); ok && event == "sweep" {
@@ -151,17 +154,20 @@ func TestSweep(t *testing.T) {
 		before[q] = r.Reply
 	}
 
-	if err := a.StartSweep(SweepConfig{Start: 1000, Stop: 100e3, PerDecade: 2, Amp: 2, Average: 2}); err != nil {
+	if err := a.StartSweep(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.StartSweep(SweepConfig{Start: 1000, Stop: 100e3, PerDecade: 2, Amp: 2}); err == nil {
+	if err := a.StartSweep(cfg); err == nil {
 		t.Error("a second sweep started")
 	}
 	var points []SweepPoint
-	timeout := time.After(30 * time.Second)
+	timeout := time.After(60 * time.Second)
 	for done := false; !done; {
 		select {
 		case e := <-events:
+			if e.Mode != cfg.Mode {
+				t.Errorf("event of mode %q, want %q", e.Mode, cfg.Mode)
+			}
 			if e.Point != nil {
 				points = append(points, *e.Point)
 			}
@@ -173,6 +179,19 @@ func TestSweep(t *testing.T) {
 			t.Fatal("sweep did not finish")
 		}
 	}
+	for _, q := range queries {
+		r, _ := a.Console(q)
+		x, err1 := strconv.ParseFloat(r.Reply, 64)
+		y, err2 := strconv.ParseFloat(before[q], 64)
+		if r.Reply != before[q] && (err1 != nil || err2 != nil || math.Abs(x/y-1) > 1e-9) {
+			t.Errorf("%s = %q after the sweep, was %q", q, r.Reply, before[q])
+		}
+	}
+	return points
+}
+
+func TestSweep(t *testing.T) {
+	points := sweepOnSim(t, SweepConfig{Start: 1000, Stop: 100e3, PerDecade: 2, Amp: 2, Average: 2})
 	if len(points) != 5 {
 		t.Fatalf("%d points, want 5", len(points))
 	}
@@ -186,13 +205,40 @@ func TestSweep(t *testing.T) {
 		if math.Abs(*p.Gain/gain-1) > 0.01 || math.Abs(*p.Phase-phase) > 0.5 {
 			t.Errorf("%g Hz: gain %.3f phase %.1f, want %.3f %.1f", p.Freq, *p.Gain, *p.Phase, gain, phase)
 		}
-	}
-	for _, q := range queries {
-		r, _ := a.Console(q)
-		x, err1 := strconv.ParseFloat(r.Reply, 64)
-		y, err2 := strconv.ParseFloat(before[q], 64)
-		if r.Reply != before[q] && (err1 != nil || err2 != nil || math.Abs(x/y-1) > 1e-9) {
-			t.Errorf("%s = %q after the sweep, was %q", q, r.Reply, before[q])
+		if p.Thd != nil || p.Harm != nil {
+			t.Errorf("%g Hz: harmonics in a frequency sweep", p.Freq)
 		}
+	}
+}
+
+// The simulator is linear: the distortion is what the counts and the noise
+// leave. Eight screens averaged with the harmonics turned to the fundamental
+// bring it to about 0.2 %, against 0.5 % from one screen.
+func TestDistortionSweep(t *testing.T) {
+	points := sweepOnSim(t, SweepConfig{Mode: "amp", Start: 0.05, Stop: 5, PerDecade: 2, Freq: 5e3, Average: 8})
+	want := []float64{0.05, 0.158, 0.5, 1.58, 5}
+	if len(points) != len(want) {
+		t.Fatalf("%d points, want %d", len(points), len(want))
+	}
+	x := 0.5
+	gain := 1 / math.Sqrt(1+x*x)
+	for i, p := range points {
+		if p.Amp != want[i] || p.Freq != 5e3 {
+			t.Errorf("point %d at %g V %g Hz, want %g V 5 kHz", i, p.Amp, p.Freq, want[i])
+		}
+		if p.Gain == nil || p.Thd == nil || p.ThdIn == nil {
+			t.Errorf("%g V: no result, %s", p.Amp, p.Note)
+			continue
+		}
+		if math.Abs(*p.Gain/gain-1) > 0.02 {
+			t.Errorf("%g V: gain %.3f, want %.3f", p.Amp, *p.Gain, gain)
+		}
+		if len(p.Harm) != 9 {
+			t.Errorf("%g V: %d harmonics, want 9", p.Amp, len(p.Harm))
+		}
+		if *p.Thd > 0.005 || *p.ThdIn > 0.005 {
+			t.Errorf("%g V: distortion %.4f, input %.4f, want under 0.5 %%", p.Amp, *p.Thd, *p.ThdIn)
+		}
+		t.Logf("%5g V: gain %.3f, distortion %.3f %%, input %.3f %%", p.Amp, *p.Gain, *p.Thd*100, *p.ThdIn*100)
 	}
 }

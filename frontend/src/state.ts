@@ -1,4 +1,4 @@
-import { reactive, ref, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef } from 'vue'
 import { call, on } from './api'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
@@ -97,26 +97,34 @@ export async function readGen() {
   if (g.output != null) gen.output = g.output
 }
 
-// The last frequency response sweep. It lives here rather than in its panel,
-// so that hiding the panel keeps the result.
-export const sweep = reactive({
-  state: 'idle' as 'idle' | SweepEvent['state'],
-  index: 0,
-  total: 0,
-  freq: 0,
-  start: 0,
-  stop: 0,
-  points: [] as SweepPoint[],
-  error: '',
-})
+// The last frequency response sweep and the last distortion sweep. They live
+// here rather than in their panels, so that hiding a panel keeps the result.
+function newSweep() {
+  return reactive({
+    state: 'idle' as 'idle' | SweepEvent['state'],
+    index: 0,
+    total: 0,
+    freq: 0,
+    amp: 0,
+    start: 0,
+    stop: 0,
+    points: [] as SweepPoint[],
+    error: '',
+  })
+}
+export const sweep = newSweep()
+export const distortion = newSweep()
+const sweepOf = (mode?: string) => (mode === 'amp' ? distortion : sweep)
+export const sweeping = computed(() => sweep.state === 'running' || distortion.state === 'running')
 
 export async function startSweep(cfg: SweepConfig) {
-  Object.assign(sweep, { state: 'running', index: 0, total: 0, freq: 0, start: cfg.start, stop: cfg.stop, points: [], error: '' })
+  const s = sweepOf(cfg.mode)
+  Object.assign(s, { state: 'running', index: 0, total: 0, freq: 0, amp: 0, start: cfg.start, stop: cfg.stop, points: [], error: '' })
   try {
     await call('StartSweep', cfg)
   } catch (e: any) {
-    sweep.state = 'error'
-    sweep.error = String(e.message ?? e)
+    s.state = 'error'
+    s.error = String(e.message ?? e)
   }
 }
 
@@ -154,9 +162,10 @@ export function init() {
     frame.value = f
   })
   on('sweep', (e: SweepEvent) => {
-    Object.assign(sweep, { state: e.state, index: e.index, total: e.total, freq: e.freq })
-    if (e.point) sweep.points.push(e.point)
-    if (e.state === 'error') sweep.error = e.error
+    const s = sweepOf(e.mode)
+    Object.assign(s, { state: e.state, index: e.index, total: e.total, freq: e.freq, amp: e.amp })
+    if (e.point) s.points.push(e.point)
+    if (e.state === 'error') s.error = e.error
     // The sweep put the generator back; the panel reads it again to be sure.
     if (e.state !== 'running') readGen().catch(() => {})
   })

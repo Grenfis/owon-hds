@@ -4,6 +4,7 @@ import { call, saveFile } from './api'
 import BodeView from './components/BodeView.vue'
 import ConsoleView from './components/ConsoleView.vue'
 import CurveView from './components/CurveView.vue'
+import DistortionView from './components/DistortionView.vue'
 import DmmView from './components/DmmView.vue'
 import GenPanel from './components/GenPanel.vue'
 import HelpView from './components/HelpView.vue'
@@ -14,7 +15,7 @@ import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
 import StepView from './components/StepView.vue'
 import { stamp } from './format'
-import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status, sweep } from './state'
+import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -37,6 +38,9 @@ watch(impShown, (v) => localStorage.setItem(IMP_KEY, v ? '1' : '0'))
 const CURVE_KEY = 'owon.curveShown'
 const curveShown = ref(localStorage.getItem(CURVE_KEY) === '1')
 watch(curveShown, (v) => localStorage.setItem(CURVE_KEY, v ? '1' : '0'))
+const THD_KEY = 'owon.thdShown'
+const thdShown = ref(localStorage.getItem(THD_KEY) === '1')
+watch(thdShown, (v) => localStorage.setItem(THD_KEY, v ? '1' : '0'))
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -45,9 +49,9 @@ const TABS: { id: View; label: string }[] = [
 ]
 
 const online = computed(() => status.value.connected)
-// While a frequency response sweep runs, it owns the scope and the
-// generator; the controls wait for it, as do the other tabs.
-const sweeping = computed(() => sweep.state === 'running')
+// While a sweep runs, it owns the scope and the generator; the controls wait
+// for it, as do the other tabs.
+const sweeping = sweepRunning
 const controls = computed(() => online.value && !sweeping.value)
 const running = computed(() => scope.run !== 'STOP')
 
@@ -164,6 +168,7 @@ onMounted(() => {
           </button>
           <button :class="{ primary: fftShown }" title="Спектр сигнала (FFT) под осциллограммой" @click="fftShown = !fftShown">Спектр</button>
           <button :class="{ primary: bodeShown }" title="АЧХ и ФЧХ цепи: генератор перебирает частоты, CH1 на входе цепи, CH2 на выходе" @click="bodeShown = !bodeShown">АЧХ</button>
+          <button :class="{ primary: thdShown }" title="КНИ от размаха: генератор перебирает размахи синуса, CH1 на входе цепи, CH2 на выходе" @click="thdShown = !thdShown">КНИ</button>
           <button :class="{ primary: stepShown }" title="Переходная характеристика: меандр на входе цепи и CH1, выход на CH2" @click="stepShown = !stepShown">Переходная</button>
           <button :class="{ primary: impShown }" title="Импеданс детали через эталонный резистор: C, L, R, ESR" @click="impShown = !impShown">Импеданс</button>
           <button :class="{ primary: curveShown }" title="Тестер компонентов: вольт-амперная характеристика детали через эталонный резистор" @click="curveShown = !curveShown">ВАХ</button>
@@ -176,7 +181,7 @@ onMounted(() => {
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown || stepShown || impShown || curveShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown || thdShown || stepShown || impShown || curveShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
@@ -192,6 +197,7 @@ onMounted(() => {
         </ScopeCanvas>
         <SpectrumView v-if="fftShown" class="spectrum" :frame="frame" @save="save" />
         <BodeView v-if="bodeShown" class="spectrum" :online="online" @save="save" />
+        <DistortionView v-if="thdShown" class="spectrum" :online="online" @save="save" />
         <StepView v-if="stepShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
         <ImpedanceView v-if="impShown" :frame="frame" :online="controls" />
         <CurveView v-if="curveShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
@@ -262,7 +268,8 @@ nav { display: flex; gap: 2px; flex: 1 0 auto; }
   padding: 10px;
 }
 .center { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.toolbar { display: flex; align-items: center; gap: 6px; }
+.toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.toolbar button, .info > span { white-space: nowrap; }
 .run { min-width: 86px; font-weight: 600; }
 .run.running { background: var(--err-bg); border-color: #6b2a2f; color: #ffd0d0; }
 .run.stopped { background: var(--ok-bg); border-color: #23603b; color: #c9f7d9; }

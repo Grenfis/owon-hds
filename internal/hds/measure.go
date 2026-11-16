@@ -349,6 +349,52 @@ func Respond(a, b Measurements, f, dt float64) (Response, bool) {
 	return r, true
 }
 
+// MaxHarmonic is the highest harmonic that Harmonics measures.
+const MaxHarmonic = 10
+
+// Harmonics returns the fundamental of m at a known frequency f and its
+// harmonics from the second on, as complex amplitudes in volts peak with the
+// phase at the first sample. It goes up to the tenth harmonic, or as far as
+// the harmonic still has four samples a period. It takes the whole periods of
+// f on the screen under a Hann window, so that the fundamental does not leak
+// into the harmonics, and returns false when the screen holds fewer than two
+// periods.
+func Harmonics(m Measurements, f, dt float64) (fund complex128, harm []complex128, ok bool) {
+	n := len(m.v)
+	if n == 0 || f <= 0 || dt <= 0 {
+		return 0, nil, false
+	}
+	periods := math.Floor(float64(n) * dt * f)
+	if periods < 2 {
+		return 0, nil, false
+	}
+	k := min(n, int(math.Round(periods/(f*dt))))
+	w := make([]float64, k)
+	var sw float64
+	for i := range w {
+		w[i] = 0.5 - 0.5*math.Cos(2*math.Pi*float64(i)/float64(k))
+		sw += w[i]
+	}
+	var mean float64
+	for _, x := range m.v[:k] {
+		mean += x
+	}
+	mean /= float64(k)
+	amp := func(h int) complex128 {
+		var sum complex128
+		wh := 2 * math.Pi * float64(h) * f * dt
+		for i, x := range m.v[:k] {
+			sum += complex(w[i]*(x-mean), 0) * cmplx.Exp(complex(0, -wh*float64(i)))
+		}
+		return sum * complex(2/sw, 0)
+	}
+	fund = amp(1)
+	for h := 2; h <= MaxHarmonic && float64(h)*f*dt <= 0.25; h++ {
+		harm = append(harm, amp(h))
+	}
+	return fund, harm, true
+}
+
 // fundamental returns the complex amplitude at w radians per sample of
 // v[i0:i1] less its mean.
 func fundamental(v []float64, i0, i1 int, w float64) complex128 {

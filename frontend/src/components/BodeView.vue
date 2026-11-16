@@ -5,7 +5,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { bodePoints, cutoffs, maximum } from '../bode'
 import { eng, parseInput, signed, stamp } from '../format'
-import { startSweep, stopSweep, sweep } from '../state'
+import { startSweep, stopSweep, sweep, sweeping } from '../state'
 import type { SweepConfig } from '../types'
 import Seg from './Seg.vue'
 
@@ -326,7 +326,7 @@ watch([() => sweep.points.length, () => sweep.freq, () => sweep.state, hover, ()
       <span class="lbl">В</span>
       <span class="lbl">усреднение</span>
       <Seg v-model="opts.average" :options="AVERAGES" :disabled="busy" />
-      <button v-if="!busy" class="primary" :disabled="!props.online || !config" :title="config ? `${count} точек` : 'Проверьте частоты и размах'" @click="run">
+      <button v-if="!busy" class="primary" :disabled="!props.online || !config || sweeping" :title="config ? `${count} точек` : 'Проверьте частоты и размах'" @click="run">
         ▶ Измерить
       </button>
       <button v-else class="stop" title="Остановить и вернуть настройки" @click="stopSweep">■ Стоп</button>

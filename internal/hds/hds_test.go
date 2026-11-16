@@ -2,6 +2,7 @@ package hds
 
 import (
 	"math"
+	"math/cmplx"
 	"testing"
 )
 
@@ -238,6 +239,56 @@ func TestRelate(t *testing.T) {
 	b = mk(1, -170*math.Pi/180)
 	if p = Relate(a, b, *a.Period, dt); p.Phase == nil || math.Abs(*p.Phase-170) > 3 {
 		t.Errorf("phase = %v, want 170", deref(p.Phase))
+	}
+}
+
+func TestHarmonics(t *testing.T) {
+	const n = 600
+	dt := 6e-3 / n
+	f := 5.3 / (n * dt)
+	mk := func(h2, h3 float64) Measurements {
+		v := make([]float64, n)
+		raw := make([]int, n)
+		for i := range v {
+			noise := math.Sin(float64(i)*12.9898) * 43758.5453
+			noise = 2 * (noise - math.Floor(noise) - 0.5)
+			x := 2 * math.Pi * f * dt * float64(i)
+			raw[i] = int(math.Round(25*(3*math.Sin(x)+h2*math.Sin(2*x+1)+h3*math.Sin(3*x+2)) + noise))
+			v[i] = float64(raw[i]) / 25
+		}
+		return Measure(v, raw, dt)
+	}
+	fund, harm, ok := Harmonics(mk(0.09, 0.03), f, dt)
+	if !ok {
+		t.Fatal("no harmonics")
+	}
+	if math.Abs(cmplx.Abs(fund)/3-1) > 0.01 {
+		t.Errorf("fundamental = %g, want 3", cmplx.Abs(fund))
+	}
+	// 113 samples a period: every harmonic up to the tenth.
+	if len(harm) != MaxHarmonic-1 {
+		t.Fatalf("%d harmonics, want %d", len(harm), MaxHarmonic-1)
+	}
+	h2, h3 := cmplx.Abs(harm[0]), cmplx.Abs(harm[1])
+	if math.Abs(h2-0.09) > 0.005 || math.Abs(h3-0.03) > 0.005 {
+		t.Errorf("2nd and 3rd = %g %g, want 0.09 0.03", h2, h3)
+	}
+	// The phases at the first sample: sin(2x+1) is cos at 1 − π/2.
+	if d := cmplx.Phase(harm[0]) - (1 - math.Pi/2); math.Abs(d) > 0.1 {
+		t.Errorf("phase of the 2nd off by %g rad", d)
+	}
+	// A clean sine: what is left is the noise of the counts.
+	_, harm, _ = Harmonics(mk(0, 0), f, dt)
+	var sq float64
+	for _, h := range harm {
+		sq += real(h)*real(h) + imag(h)*imag(h)
+	}
+	if thd := math.Sqrt(sq) / 3; thd > 0.003 {
+		t.Errorf("distortion of a clean sine = %.4f", thd)
+	}
+	// Ten samples a period leave the 2nd harmonic only.
+	if _, harm, _ := Harmonics(mk(0, 0), 0.1/dt, dt); len(harm) != 1 {
+		t.Errorf("%d harmonics at 10 samples a period, want 1", len(harm))
 	}
 }
 

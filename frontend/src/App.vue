@@ -182,11 +182,12 @@ header {
 }
 .brand { display: flex; align-items: baseline; gap: 8px; }
 .logo { font-weight: 700; letter-spacing: .04em; }
-nav { display: flex; gap: 2px; flex: 1; }
-.tab { border: 0; background: transparent; color: var(--muted); padding: 6px 12px; }
+nav { display: flex; gap: 2px; flex: 1 0 auto; }
+.tab { border: 0; background: transparent; color: var(--muted); padding: 6px 12px; white-space: nowrap; }
 .tab:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
 .tab.on { background: var(--panel-3); color: var(--text); }
-.conn { display: flex; align-items: center; gap: 8px; }
+/* When the header is short of room, the device name in the chip gives way. */
+.conn { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .chip {
   display: inline-flex;
   align-items: center;
@@ -195,6 +196,8 @@ nav { display: flex; gap: 2px; flex: 1; }
   border-radius: 999px;
   font-size: 12px;
   max-width: 460px;
+  min-width: 90px;
+  flex-shrink: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

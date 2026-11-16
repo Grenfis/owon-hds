@@ -5,6 +5,7 @@ import BodeView from './components/BodeView.vue'
 import ConsoleView from './components/ConsoleView.vue'
 import DmmView from './components/DmmView.vue'
 import GenPanel from './components/GenPanel.vue'
+import HelpView from './components/HelpView.vue'
 import ImpedanceView from './components/ImpedanceView.vue'
 import MeasureStrip from './components/MeasureStrip.vue'
 import ScopeCanvas from './components/ScopeCanvas.vue'
@@ -100,7 +101,16 @@ async function save(name: string, blob: Blob) {
   }
 }
 
-onMounted(init)
+const helpShown = ref(false)
+onMounted(() => {
+  init()
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'F1') {
+      e.preventDefault()
+      helpShown.value = true
+    }
+  })
+})
 </script>
 
 <template>
@@ -113,6 +123,7 @@ onMounted(init)
       <nav>
         <button v-for="t in TABS" :key="t.id" class="tab" :class="{ on: view === t.id }" :disabled="sweeping && view !== t.id" @click="view = t.id">{{ t.label }}</button>
       </nav>
+      <button class="ghost help" title="Руководство по режимам (F1)" @click="helpShown = true">Справка</button>
       <div class="conn">
         <template v-if="online">
           <span class="chip ok" :title="status.detail">
@@ -130,6 +141,7 @@ onMounted(init)
         </template>
       </div>
     </header>
+    <HelpView v-if="helpShown" @close="helpShown = false" />
 
     <div v-if="lastError && (online || view !== 'scope')" class="banner err">
       {{ lastError }}

@@ -9,6 +9,7 @@ import MeasureStrip from './components/MeasureStrip.vue'
 import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
+import StepView from './components/StepView.vue'
 import { stamp } from './format'
 import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status, sweep } from './state'
 
@@ -24,6 +25,9 @@ watch(fftShown, (v) => localStorage.setItem(FFT_KEY, v ? '1' : '0'))
 const BODE_KEY = 'owon.bodeShown'
 const bodeShown = ref(localStorage.getItem(BODE_KEY) === '1')
 watch(bodeShown, (v) => localStorage.setItem(BODE_KEY, v ? '1' : '0'))
+const STEP_KEY = 'owon.stepShown'
+const stepShown = ref(localStorage.getItem(STEP_KEY) === '1')
+watch(stepShown, (v) => localStorage.setItem(STEP_KEY, v ? '1' : '0'))
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -140,6 +144,7 @@ onMounted(init)
           </button>
           <button :class="{ primary: fftShown }" title="Спектр сигнала (FFT) под осциллограммой" @click="fftShown = !fftShown">Спектр</button>
           <button :class="{ primary: bodeShown }" title="АЧХ и ФЧХ цепи: генератор перебирает частоты, CH1 на входе цепи, CH2 на выходе" @click="bodeShown = !bodeShown">АЧХ</button>
+          <button :class="{ primary: stepShown }" title="Переходная характеристика: меандр на входе цепи и CH1, выход на CH2" @click="stepShown = !stepShown">Переходная</button>
           <div class="info">
             <span v-if="frame" class="state" :class="runState[1]">{{ runState[0] }}</span>
             <span v-if="frame" class="mono">{{ frame.fps.toFixed(1) }} кадр/с</span>
@@ -149,7 +154,7 @@ onMounted(init)
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown || stepShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
@@ -165,6 +170,7 @@ onMounted(init)
         </ScopeCanvas>
         <SpectrumView v-if="fftShown" class="spectrum" :frame="frame" @save="save" />
         <BodeView v-if="bodeShown" class="spectrum" :online="online" @save="save" />
+        <StepView v-if="stepShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
         <MeasureStrip :frame="frame" />
       </div>
       <aside>

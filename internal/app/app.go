@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -160,11 +161,15 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	var last time.Time
 	var fps float64
 	misses := 0
+	// The first frame after a scale change pairs the new scale with a trace
+	// taken at the old one, so it is not shown.
+	skip := false
 	for ctx.Err() == nil {
 		for _, cmd := range a.queue.take() {
 			if err := c.Send(cmd); err != nil {
 				return err
 			}
+			skip = skip || scaleCommand.MatchString(cmd)
 			a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
 		}
 		switch a.view.Load() {
@@ -182,6 +187,10 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 				continue
 			}
 			misses = 0
+			if skip {
+				skip = false
+				continue
+			}
 			now := time.Now()
 			if !last.IsZero() {
 				inst := 1 / now.Sub(last).Seconds()
@@ -210,6 +219,8 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	}
 	return ctx.Err()
 }
+
+var scaleCommand = regexp.MustCompile(`^:CH[12]:SCAL`)
 
 // wait sleeps until d passes, a setting is queued or the context ends.
 func (a *App) wait(ctx context.Context, d time.Duration) {
@@ -261,15 +272,16 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 	}
 	h, err := hds.ParseHead(b)
 	if err != nil {
+		c.Resync()
 		return nil, fmt.Errorf("заголовок осциллограммы: %w", err)
 	}
 	a.seq++
 	f := &Frame{
 		Seq: a.seq, Run: h.RunStatus,
-		TimeDiv: hds.ParseUnit(h.Timebase.Scale), TimeScale: h.Timebase.Scale, HOffset: float64(h.Timebase.HOffset),
+		TimeDiv: hds.ParseUnit(h.Timebase.Scale), TimeScale: h.Timebase.Scale, HOffset: h.HOffsetDivs(),
 		SampleRate: strings.Trim(h.Sample.SampleRate, "()"), AcqMode: h.Sample.Type, DepMem: h.Sample.DepMem,
 		Trig: FrameTrig{
-			Source: h.Trig.Items.Channel, Edge: h.Trig.Items.Edge, Sweep: h.Trig.Sweep,
+			Source: h.Trig.Items.Channel, Edge: h.Trig.Items.Edge, Sweep: h.Sweep(),
 			Coupling: h.Trig.Items.Coupling, LevelStr: h.Trig.Items.Level, Level: hds.ParseUnit(h.Trig.Items.Level),
 		},
 	}
@@ -283,6 +295,11 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 			if err != nil {
 				return nil, err
 			}
+			// A reply of the wrong length belongs to another query.
+			if want := int(h.Sample.DataLen); want > 0 && len(p) != want {
+				c.Resync()
+				return nil, fmt.Errorf("%s: %d байт вместо %d", ch.Name, len(p), want)
+			}
 			ch.Raw = hds.DecodeSamples(p)
 			if n := len(ch.Raw); n > 0 {
 				volts := make([]float64, n)
@@ -290,6 +307,12 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 					volts[i] = float64(r-ch.Offset) / hds.DivPixels * ch.VoltsPerDiv
 				}
 				ch.Meas = hds.Measure(volts, ch.Raw, f.TimeDiv*hds.DivsX/float64(n))
+			}
+			// The device counts the frequency itself, and more precisely
+			// than a few periods on the screen allow.
+			if fr := float64(hc.Frequence); fr > 0 {
+				period := 1 / fr
+				ch.Meas.Freq, ch.Meas.Period = &fr, &period
 			}
 		}
 		f.Channels = append(f.Channels, ch)
@@ -384,7 +407,7 @@ func (a *App) Console(cmd string) (ConsoleResult, error) {
 	if cmd == "" {
 		return ConsoleResult{}, errors.New("пустая команда")
 	}
-	if blocked(cmd) {
+	if Blocked(cmd) {
 		return ConsoleResult{}, errors.New("заводская или калибровочная команда: она пишет в память прибора, поэтому заблокирована")
 	}
 	c := a.currentClient()

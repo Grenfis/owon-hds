@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { on } from '../api'
+import { eng } from '../format'
 import { set, status } from '../state'
 
 defineProps<{ disabled: boolean }>()
@@ -12,14 +13,14 @@ const mode = ref(localStorage.getItem('owon.dmmMode') ?? 'dcv')
 const rel = ref(false)
 
 const MODES = [
-  { id: 'dcv', sym: 'V⎓', label: 'Пост. напряжение', key: 'dmm.voltage', value: 'DC' },
-  { id: 'acv', sym: 'V~', label: 'Перем. напряжение', key: 'dmm.voltage', value: 'AC' },
-  { id: 'dca', sym: 'A⎓', label: 'Пост. ток', key: 'dmm.current', value: 'DC' },
-  { id: 'aca', sym: 'A~', label: 'Перем. ток', key: 'dmm.current', value: 'AC' },
-  { id: 'res', sym: 'Ω', label: 'Сопротивление', key: 'dmm.func', value: 'RESistance' },
-  { id: 'diod', sym: '⊳|', label: 'Диод', key: 'dmm.func', value: 'DIODe' },
-  { id: 'cont', sym: '•))', label: 'Прозвонка', key: 'dmm.func', value: 'CONTinuity' },
-  { id: 'cap', sym: '⊣⊢', label: 'Ёмкость', key: 'dmm.func', value: 'CAPacitance' },
+  { id: 'dcv', sym: 'V⎓', label: 'Пост. напряжение', key: 'dmm.voltage', value: 'DC', unit: 'В' },
+  { id: 'acv', sym: 'V~', label: 'Перем. напряжение', key: 'dmm.voltage', value: 'AC', unit: 'В' },
+  { id: 'dca', sym: 'A⎓', label: 'Пост. ток', key: 'dmm.current', value: 'DC', unit: 'А' },
+  { id: 'aca', sym: 'A~', label: 'Перем. ток', key: 'dmm.current', value: 'AC', unit: 'А' },
+  { id: 'res', sym: 'Ω', label: 'Сопротивление', key: 'dmm.func', value: 'RESistance', unit: 'Ом' },
+  { id: 'diod', sym: '⊳|', label: 'Диод', key: 'dmm.func', value: 'DIODe', unit: 'В' },
+  { id: 'cont', sym: '•))', label: 'Прозвонка', key: 'dmm.func', value: 'CONTinuity', unit: 'Ом' },
+  { id: 'cap', sym: '⊣⊢', label: 'Ёмкость', key: 'dmm.func', value: 'CAPacitance', unit: 'Ф' },
 ]
 
 function pick(m: (typeof MODES)[number]) {
@@ -29,11 +30,19 @@ function pick(m: (typeof MODES)[number]) {
   set(m.key, m.value)
 }
 
-// The reply format of :DMM:MEAS? is not documented; show the number and the
-// unit if they can be told apart, and the raw reply in any case.
-const parsed = computed(() => {
-  const m = raw.value.match(/([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*([^\d\s].*)?$/)
-  return m ? { num: m[1], unit: (m[2] ?? '').trim() } : null
+// :DMM:MEAS? replies with a bare number in base units, "1.2345e+00", so the
+// unit comes from the mode picked here. A mode changed on the device itself
+// is not known to the program.
+const unit = computed(() => MODES.find((m) => m.id === mode.value)?.unit ?? '')
+const value = computed(() => {
+  const v = parseFloat(raw.value)
+  return Number.isFinite(v) ? v : null
+})
+const shown = computed(() => {
+  if (value.value == null) return { num: raw.value || '—', unit: '' }
+  const s = eng(value.value, unit.value, 5)
+  const i = s.lastIndexOf(' ')
+  return { num: s.slice(0, i), unit: s.slice(i + 1) }
 })
 
 const spark = computed(() => {
@@ -50,8 +59,8 @@ onMounted(() => {
   off = on('dmm', (d: { raw: string; time: number }) => {
     raw.value = d.raw
     at.value = d.time
-    const v = parseFloat(parsed.value?.num ?? '')
-    if (Number.isFinite(v)) {
+    const v = value.value
+    if (v != null) {
       history.value.push(v)
       if (history.value.length > 150) history.value.shift()
     }
@@ -64,18 +73,18 @@ onBeforeUnmount(() => off?.())
   <div class="dmm">
     <div class="note">
       Переключите прибор на экран мультиметра кнопкой <b>Mode</b>: по USB экран не переключается.
-      Формат ответа мультиметра в документации не описан, поэтому рядом с числом показан исходный ответ прибора.
+      Прибор присылает только число, без единицы. Единица берётся из режима, выбранного справа, поэтому выберите тот же режим, что на приборе.
     </div>
 
     <div class="main">
       <div class="readout" :class="{ stale: !status.connected }">
-        <div class="value mono">{{ parsed?.num ?? (raw || '—') }}</div>
-        <div class="unit">{{ parsed?.unit }}</div>
+        <div class="value mono">{{ shown.num }}</div>
+        <div class="unit">{{ shown.unit }}</div>
         <div class="raw mono">ответ прибора: {{ raw || 'нет данных' }}</div>
         <svg v-if="spark" class="spark" viewBox="0 0 600 60" preserveAspectRatio="none">
           <polyline :points="spark" />
         </svg>
-        <div v-if="range" class="range mono dim">мин {{ range[0] }} · макс {{ range[1] }} · {{ history.length }} отсчётов</div>
+        <div v-if="range" class="range mono dim">мин {{ eng(range[0], unit, 5) }} · макс {{ eng(range[1], unit, 5) }} · {{ history.length }} отсчётов</div>
       </div>
 
       <div class="side">

@@ -115,8 +115,12 @@ export async function disconnect() {
 
 export function init() {
   on('status', (s: Status) => {
+    const was = status.value.connected
     status.value = s
     if (!s.connected) frame.value = null
+    // Also after an automatic reconnect: the generator may have been changed
+    // on the device meanwhile.
+    else if (!was) readGen().catch(() => {})
   })
   on('frame', (f: Frame) => {
     applyFrame(f)

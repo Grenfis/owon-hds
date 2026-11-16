@@ -36,12 +36,12 @@ func TestCommand(t *testing.T) {
 func TestBlocked(t *testing.T) {
 	for _, cmd := range []string{":SERial 123", ":SER 1", ":Selfcorrec", ":AUTocalibration", ":AUT",
 		":PRACTISE:KEYSET 3", "DOWNload:TXT x", ":VIDEO", ":VOLFULL"} {
-		if !blocked(cmd) {
+		if !Blocked(cmd) {
 			t.Errorf("%q not blocked", cmd)
 		}
 	}
 	for _, cmd := range []string{"*IDN?", ":AUToseton", ":SECurity:BRIGhtness?", ":SHUTdown:TIMe?", ":DMM:MEAS?"} {
-		if blocked(cmd) {
+		if Blocked(cmd) {
 			t.Errorf("%q blocked", cmd)
 		}
 	}

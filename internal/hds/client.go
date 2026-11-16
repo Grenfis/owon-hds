@@ -6,6 +6,11 @@
 //   - a set command has no reply;
 //   - a text query replies once, sometimes with a trailing "->" prompt;
 //   - a :DATa query replies with a 4-byte little-endian length and the payload.
+//
+// After :CH<n>:SCALe the device answers the next waveform query only after
+// about 1.1 s, even if the scale did not change. A reply that comes after the
+// client gave up would be read as the reply to the next query, so the client
+// waits long and, after any failure, throws away what the device still sends.
 package hds
 
 import (
@@ -30,9 +35,13 @@ type Transport interface {
 var ErrTimeout = errors.New("нет ответа от прибора")
 
 const (
-	ioTimeout   = time.Second
+	ioTimeout   = 3 * time.Second
 	readBufSize = 16 * 1024
 	maxDataSize = 4 << 20
+	// sendQuiet is how long to listen for an unexpected reply to a command
+	// that has none; resyncQuiet is the silence that ends a resync.
+	sendQuiet   = 5 * time.Millisecond
+	resyncQuiet = 300 * time.Millisecond
 )
 
 // Client serialises SCPI transactions over one Transport.
@@ -40,9 +49,10 @@ type Client struct {
 	mu  sync.Mutex
 	t   Transport
 	buf []byte
-	// stale is set after a command without reply: if the device answered it
-	// anyway, the next query would read that answer instead of its own.
-	stale bool
+	// leftover is how long the next transaction first listens for data that
+	// belongs to an earlier one: briefly after a command without reply, in
+	// case the device answered it anyway, and longer after a failure.
+	leftover time.Duration
 }
 
 func New(t Transport) *Client {
@@ -59,9 +69,17 @@ func (c *Client) Close() error {
 func (c *Client) Send(cmd string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.stale = true
+	c.leftover = max(c.leftover, sendQuiet)
 	_, err := c.t.Write([]byte(cmd))
 	return err
+}
+
+// Resync makes the next transaction discard whatever the device still sends.
+// Call it when a reply turns out to belong to another query.
+func (c *Client) Resync() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.leftover = resyncQuiet
 }
 
 // Query sends a command and returns its text reply.
@@ -74,6 +92,7 @@ func (c *Client) Query(cmd string) (string, error) {
 	}
 	n, err := c.t.Read(c.buf, ioTimeout)
 	if err != nil {
+		c.leftover = resyncQuiet
 		return "", err
 	}
 	return CleanReply(c.buf[:n]), nil
@@ -87,6 +106,14 @@ func (c *Client) QueryData(cmd string) ([]byte, error) {
 	if _, err := c.t.Write([]byte(cmd + "\r\n")); err != nil {
 		return nil, err
 	}
+	p, err := c.readData(cmd)
+	if err != nil {
+		c.leftover = resyncQuiet
+	}
+	return p, err
+}
+
+func (c *Client) readData(cmd string) ([]byte, error) {
 	n, err := c.t.Read(c.buf, ioTimeout)
 	if err != nil {
 		return nil, err
@@ -96,7 +123,6 @@ func (c *Client) QueryData(cmd string) ([]byte, error) {
 	}
 	size := int(binary.LittleEndian.Uint32(c.buf))
 	if size > maxDataSize {
-		c.stale = true
 		return nil, fmt.Errorf("%s: неверная длина ответа %d", cmd, size)
 	}
 	out := make([]byte, 0, size)
@@ -117,14 +143,16 @@ func (c *Client) QueryData(cmd string) ([]byte, error) {
 	return out[:size], nil
 }
 
-// drain discards a reply left over from a command sent without reading.
+// drain discards data left over from earlier transactions: it reads until
+// the device stays quiet for c.leftover, or gives up after 64 reads.
 func (c *Client) drain() {
-	if !c.stale {
+	quiet := c.leftover
+	if quiet == 0 {
 		return
 	}
-	c.stale = false
-	for i := 0; i < 4; i++ {
-		if n, err := c.t.Read(c.buf, 5*time.Millisecond); err != nil || n == 0 {
+	c.leftover = 0
+	for i := 0; i < 64; i++ {
+		if n, err := c.t.Read(c.buf, quiet); err != nil || n == 0 {
 			return
 		}
 	}

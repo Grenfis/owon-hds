@@ -46,6 +46,9 @@ func Measure(v []float64, raw []int, dt float64) Measurements {
 	if dt <= 0 || len(raw) != len(v) || rawSwing(raw) < 4 {
 		return m
 	}
+	// The device interleaves two ADCs, and next to a fast edge one sample
+	// may land on the other side of it; a median of three removes those.
+	v = median3(v)
 	mid, hyst := (hi+lo)/2, (hi-lo)*0.1
 	var rises []float64
 	state := 0
@@ -89,6 +92,16 @@ func crossing(v []float64, i int, level float64) float64 {
 		}
 	}
 	return float64(i)
+}
+
+func median3(v []float64) []float64 {
+	out := make([]float64, len(v))
+	copy(out, v)
+	for i := 1; i < len(v)-1; i++ {
+		a, b, c := v[i-1], v[i], v[i+1]
+		out[i] = math.Max(math.Min(a, b), math.Min(math.Max(a, b), c))
+	}
+	return out
 }
 
 func rawSwing(raw []int) int {

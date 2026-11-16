@@ -7,11 +7,12 @@ import (
 	"strings"
 )
 
-// Screen geometry of the HDS272S, from OWON's model table ("HDS272S_1").
+// Screen geometry of the HDS272S, checked on the device.
 const (
-	DivPixels = 25 // sample counts per division, both axes
-	DivsX     = 12
-	DivsY     = 8
+	DivPixels  = 25 // sample counts per vertical division
+	DivSamples = 50 // samples per horizontal division
+	DivsX      = 12
+	DivsY      = 8
 )
 
 // Head is the reply of :DATa:WAVe:SCReen:HEAD?. Keys and values are
@@ -19,7 +20,7 @@ const (
 type Head struct {
 	Timebase struct {
 		Scale   string `json:"scale"`
-		HOffset Num    `json:"hoffset"`
+		HOffset Num    `json:"hoffset"` // sample counts, DivPixels per division
 	} `json:"timebase"`
 	Sample struct {
 		FullScreen Num    `json:"fullscreen"`
@@ -41,9 +42,23 @@ type Head struct {
 			Edge     string `json:"edge"`
 			Coupling string `json:"coupling"`
 			Holdoff  string `json:"holdoff"`
+			Sweep    string `json:"sweep"`
 		} `json:"items"`
-		Sweep string `json:"sweep"`
+		Sweep string `json:"sweep"` // older firmware keeps it here, outside items
 	} `json:"trig"`
+}
+
+// HOffsetDivs is the horizontal offset in divisions, as :HORizontal:OFFSet
+// takes it. A positive offset moves the trigger point left of the centre.
+func (h *Head) HOffsetDivs() float64 {
+	return float64(h.Timebase.HOffset) / DivPixels
+}
+
+func (h *Head) Sweep() string {
+	if h.Trig.Items.Sweep != "" {
+		return h.Trig.Items.Sweep
+	}
+	return h.Trig.Sweep
 }
 
 type HeadChannel struct {
@@ -74,24 +89,30 @@ func ParseHead(b []byte) (*Head, error) {
 	if err := json.Unmarshal([]byte(strings.ToLower(strings.TrimSpace(string(b)))), &h); err != nil {
 		return nil, err
 	}
+	// The sample rate keeps its case: lower-cased, "MSa/s" reads as milli.
+	var orig struct{ Sample struct{ SampleRate string } }
+	if json.Unmarshal(b, &orig) == nil && orig.Sample.SampleRate != "" {
+		h.Sample.SampleRate = orig.Sample.SampleRate
+	}
 	return &h, nil
 }
 
-// VoltsPerDiv is the vertical scale the screen shows. OWON's software
-// multiplies the head scale by the probe factor, so the head reports it at 1X.
+// VoltsPerDiv is the vertical scale the screen shows. The head reports it
+// with the probe factor already applied: with a 10X probe and "1.00 V" a
+// trace 40 counts high is 1.6 V, as the device measures it.
 func (c *HeadChannel) VoltsPerDiv() float64 {
-	return ParseUnit(c.Scale) * ProbeFactor(c.Probe)
+	return ParseUnit(c.Scale)
 }
 
 func (c *HeadChannel) On() bool { return c.Display == "on" }
 
 // DecodeSamples turns a :DATa:WAVe:SCReen:CH<n>? payload into screen
-// positions in sample counts from the centre. Each point takes two bytes;
-// OWON's software reads the first one as a signed byte and skips the second.
+// positions in sample counts from the centre. Each byte is one signed
+// sample, 600 per screen. OWON's software reads every other byte only.
 func DecodeSamples(p []byte) []int {
-	out := make([]int, len(p)/2)
-	for i := range out {
-		out[i] = int(int8(p[2*i]))
+	out := make([]int, len(p))
+	for i, b := range p {
+		out[i] = int(int8(b))
 	}
 	return out
 }
@@ -110,12 +131,13 @@ var unitPrefixes = []struct {
 	mult   float64
 }{
 	{"ns", 1e-9}, {"us", 1e-6}, {"ms", 1e-3}, {"ks", 1e3}, {"s", 1},
-	{"uv", 1e-6}, {"mv", 1e-3}, {"kv", 1e3}, {"v", 1},
+	{"pv", 1e-12}, {"nv", 1e-9}, {"uv", 1e-6}, {"mv", 1e-3}, {"kv", 1e3}, {"v", 1},
 	{"mhz", 1e6}, {"khz", 1e3}, {"hz", 1},
 }
 
-// ParseUnit reads values like "1.0ms", "200mv", "2.00v" or "1.000000e+04"
-// into base units. "mhz" is read as megahertz, as the device prints it.
+// ParseUnit reads values like "1.0ms", "200mv", "1.00 v", "0.00pv" or
+// "1.000000e+04" into base units. "mhz" is read as megahertz, as the device
+// prints it.
 func ParseUnit(s string) float64 {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.Trim(s, "()")

@@ -1,6 +1,7 @@
 // Package sim emulates an HDS272S at the SCPI level, so the application can
 // be used and tested without the device. CH1 sees the generator output, CH2
 // sees the same signal after an RC low-pass filter with a 10 kHz corner.
+// Reply formats follow an HDS272S with firmware V8.8.2.
 package sim
 
 import (
@@ -18,7 +19,7 @@ import (
 )
 
 const (
-	points   = hds.DivsX * hds.DivPixels
+	points   = hds.DivsX * hds.DivSamples
 	filterFc = 10e3
 )
 
@@ -46,11 +47,11 @@ type Device struct {
 	ch       [2]channel
 	tdiv     float64
 	tdivStr  string
-	hoffset  float64 // divisions
+	hoffset  float64 // divisions; positive moves the trigger point left
 	trigSrc  int
-	trigEdge string
+	trigEdge string  // RISe or FALl
 	trigLvl  float64 // volts
-	sweep    string
+	sweep    string  // AUTo, NORMal or SINGle
 	trigCpl  string
 	running  bool
 	acqMode  string
@@ -60,6 +61,7 @@ type Device struct {
 	dmmRel   bool
 	last     [2][]int
 	trigged  bool
+	busy     bool // a scale change delays the next waveform query, as on the device
 	pending  []byte
 	// Latency is added to every waveform query to mimic the real device.
 	Latency time.Duration
@@ -72,11 +74,11 @@ func New() *Device {
 			{display: true, coupling: "DC", probe: 1, scale: 0.5},
 		},
 		tdiv: 200e-6, tdivStr: "200us",
-		trigEdge: "RISE", sweep: "AUTO", trigCpl: "DC",
+		trigEdge: "RISe", sweep: "AUTo", trigCpl: "DC",
 		running: true, acqMode: "SAMPle", depmem: "4K",
-		gen:     generator{wave: "SINE", freq: 1e3, amp: 2, duty: 50, symmetry: 50, on: true},
+		gen:     generator{wave: "SINe", freq: 1e3, amp: 2, duty: 50, symmetry: 50, on: true},
 		dmmFunc: "DCV",
-		Latency: 35 * time.Millisecond,
+		Latency: 20 * time.Millisecond,
 	}
 }
 
@@ -117,12 +119,7 @@ var keywords = strings.Fields(`CH1 CH2 DISPlay COUPling PROBe SCALe OFFSet HORiz
 var shortForm = func() map[string]string {
 	m := map[string]string{}
 	for _, k := range keywords {
-		short := strings.Map(func(r rune) rune {
-			if r >= 'a' && r <= 'z' {
-				return -1
-			}
-			return r
-		}, k)
+		short := shortName(k)
 		m[strings.ToUpper(k)], m[short] = short, short
 	}
 	return m
@@ -150,9 +147,9 @@ func (d *Device) handle(cmd string) (reply []byte, delay time.Duration) {
 	if query {
 		switch path {
 		case "DAT:WAV:SCR:HEAD":
-			return d.data(d.head()), d.Latency
+			return d.data(d.head()), d.Latency + d.settle()
 		case "DAT:WAV:SCR:CH1", "DAT:WAV:SCR:CH2":
-			return d.data(d.samples(int(path[len(path)-1] - '1'))), d.Latency / 2
+			return d.data(d.samples(int(path[len(path)-1] - '1'))), d.Latency*5/4 + d.settle()
 		}
 		s, ok := d.query(path)
 		if !ok {
@@ -164,6 +161,16 @@ func (d *Device) handle(cmd string) (reply []byte, delay time.Duration) {
 	return nil, 0
 }
 
+// settle returns the extra delay of a waveform query after a scale change:
+// the device answers it about 1.1 s late.
+func (d *Device) settle() time.Duration {
+	if !d.busy {
+		return 0
+	}
+	d.busy = false
+	return 1100 * time.Millisecond
+}
+
 func (d *Device) data(payload []byte) []byte {
 	out := make([]byte, 4, 4+len(payload))
 	binary.LittleEndian.PutUint32(out, uint32(len(payload)))
@@ -172,6 +179,7 @@ func (d *Device) data(payload []byte) []byte {
 
 func (d *Device) query(path string) (string, bool) {
 	sci := func(f float64) string { return strconv.FormatFloat(f, 'e', 6, 64) }
+	short := func(f float64) string { return strconv.FormatFloat(f, 'e', -1, 64) }
 	onOff := func(b bool) string {
 		if b {
 			return "ON"
@@ -187,34 +195,36 @@ func (d *Device) query(path string) (string, bool) {
 		case "PROB":
 			return fmt.Sprintf("%gX", c.probe), true
 		case "SCAL":
-			return fmtVolts(c.scale), true
+			return short(c.scale), true
 		case "OFFS":
-			return strconv.Itoa(int(math.Round(c.offset * hds.DivPixels))), true
+			return strconv.FormatFloat(c.offset, 'f', 2, 64), true
 		}
 	}
 	switch path {
 	case "*IDN":
 		return "OWON,HDS272S,SIMULATOR,V8.8.2", true
 	case "MOD":
-		return "HDS272S", true
+		return "HDS272S_1", true
 	case "HOR:SCAL":
-		return d.tdivStr, true
+		return short(d.tdiv), true
 	case "HOR:OFFS":
-		return strconv.FormatFloat(d.hoffset, 'f', -1, 64), true
+		return strconv.FormatFloat(d.hoffset, 'f', 2, 64), true
 	case "ACQ:MOD":
 		return d.acqMode, true
 	case "ACQ:DEPM":
 		return d.depmem, true
 	case "TRIG:STAT":
 		return d.status(), true
-	case "TRIG:SING:SOUR":
+	case "TRIG:SING:EDG:SOUR", "TRIG:EDG:SOUR", "TRIG:SOUR":
 		return fmt.Sprintf("CH%d", d.trigSrc+1), true
-	case "TRIG:SING:EDG":
+	case "TRIG:SING:EDG", "TRIG:EDG":
 		return d.trigEdge, true
-	case "TRIG:SING:EDG:LEV":
+	case "TRIG:SING:EDG:LEV", "TRIG:EDG:LEV":
 		return fmtVolts(d.trigLvl), true
-	case "TRIG:SING:SWE":
+	case "TRIG:SWE":
 		return d.sweep, true
+	case "TRIG:COUP":
+		return d.trigCpl, true
 	case "RUNN":
 		if d.running {
 			return "RUN", true
@@ -283,9 +293,10 @@ func (d *Device) set(path, arg string) {
 			if v := hds.ParseUnit(arg); v > 0 {
 				c.scale = v
 			}
+			d.busy = true
 		case "OFFS":
 			if v, ok := num(-8, 8); ok {
-				c.offset = v
+				c.offset = quantize(v)
 			}
 		}
 		return
@@ -297,37 +308,47 @@ func (d *Device) set(path, arg string) {
 		}
 	case "HOR:OFFS":
 		if v, ok := num(-1e4, 1e4); ok {
-			d.hoffset = v
+			d.hoffset = quantize(v)
 		}
 	case "ACQ:MOD":
 		d.acqMode = arg
 	case "ACQ:DEPM":
 		d.depmem = up
-	case "TRIG:SING:SOUR", "TRIG:SOUR":
+	case "TRIG:SING:EDG:SOUR", "TRIG:EDG:SOUR", "TRIG:SOUR":
 		if up == "CH1" || up == "CH2" {
 			d.trigSrc = int(up[2] - '1')
 		}
-	case "TRIG:SING:EDG":
-		if up == "RISE" || up == "FALL" {
-			d.trigEdge = up
+	case "TRIG:SING:EDG", "TRIG:EDG":
+		switch up {
+		case "RISE", "RIS":
+			d.trigEdge = "RISe"
+		case "FALL", "FAL":
+			d.trigEdge = "FALl"
 		}
-	case "TRIG:SING:EDG:LEV":
-		d.trigLvl = hds.ParseUnit(arg)
-	case "TRIG:SING:SWE":
-		if up == "AUTO" || up == "NORMAL" || up == "NORM" || up == "SINGLE" || up == "SING" {
-			d.sweep = up
-			if strings.HasPrefix(up, "SING") {
+	case "TRIG:SING:EDG:LEV", "TRIG:EDG:LEV":
+		// The device rounds the level to a whole count of the source channel.
+		step := d.ch[d.trigSrc].scale / hds.DivPixels
+		d.trigLvl = math.Round(hds.ParseUnit(arg)/step) * step
+	case "TRIG:SWE":
+		if sw, ok := map[string]string{"AUTO": "AUTo", "AUT": "AUTo", "NORMAL": "NORMal", "NORM": "NORMal",
+			"SINGLE": "SINGle", "SING": "SINGle"}[up]; ok {
+			d.sweep = sw
+			if sw == "SINGle" {
 				d.running = true
 			}
 		}
-	case "TRIG:SING:COUP":
-		d.trigCpl = up
+	case "TRIG:COUP":
+		if up == "DC" || up == "AC" {
+			d.trigCpl = up
+		}
 	case "RUNN":
 		d.running = up == "RUN"
 	case "AUT":
 		d.autoset()
 	case "FUNC":
-		d.gen.wave = up
+		if w, ok := waves[up]; ok {
+			d.gen.wave = w
+		}
 	case "FUNC:FREQ":
 		if v, ok := num(0.1, 25e6); ok {
 			d.gen.freq = v
@@ -372,8 +393,8 @@ func (d *Device) status() string {
 		return "STOP"
 	case d.trigged:
 		return "TRIG"
-	case d.sweep == "AUTO":
-		return "AUTO"
+	case d.sweep == "AUTo":
+		return "AUTo"
 	}
 	return "READY"
 }
@@ -404,29 +425,28 @@ func (d *Device) head() []byte {
 		SCALE     string
 		OFFSET    int
 		FREQUENCE float64
-		INVERSE   string
 	}
 	onOff := map[bool]string{true: "ON", false: "OFF"}
 	chans := make([]ch, 2)
 	for i, c := range d.ch {
 		chans[i] = ch{
 			NAME: fmt.Sprintf("CH%d", i+1), DISPLAY: onOff[c.display], COUPLING: c.coupling,
-			PROBE: fmt.Sprintf("%gX", c.probe), SCALE: fmtVolts(c.scale / c.probe),
-			OFFSET: int(math.Round(c.offset * hds.DivPixels)), FREQUENCE: 0, INVERSE: "OFF",
+			PROBE: fmt.Sprintf("%gX", c.probe), SCALE: fmtVolts(c.scale),
+			OFFSET: int(math.Round(c.offset * hds.DivPixels)),
 		}
 	}
 	h := map[string]any{
-		"TIMEBASE": map[string]any{"SCALE": d.tdivStr, "HOFFSET": d.hoffset},
-		"SAMPLE": map[string]any{"FULLSCREEN": points * 2, "SLOWMOVE": -1, "DATALEN": points * 2,
-			"SAMPLERATE": fmt.Sprintf("(%s)", fmtRate(points/(d.tdiv*hds.DivsX))), "TYPE": strings.ToUpper(d.acqMode), "DEPMEM": d.depmem},
+		"TIMEBASE": map[string]any{"SCALE": d.tdivStr, "HOFFSET": int(math.Round(d.hoffset * hds.DivPixels))},
+		"SAMPLE": map[string]any{"FULLSCREEN": points, "SLOWMOVE": -1, "DATALEN": points,
+			"SAMPLERATE": fmtRate(points / (d.tdiv * hds.DivsX)), "TYPE": d.acqMode, "DEPMEM": d.depmem},
 		"CHANNEL":   chans,
 		"DATATYPE":  "SCREEN",
 		"RUNSTATUS": d.status(),
-		"IDN":       "OWON,HDS272S,SIMULATOR,V8.8.2",
-		"MODEL":     "HDS272S",
-		"TRIG": map[string]any{"MODE": "SINGle", "TYPE": "EDGE", "SWEEP": d.sweep, "ITEMS": map[string]any{
-			"CHANNEL": fmt.Sprintf("CH%d", d.trigSrc+1), "LEVEL": fmtVolts(d.trigLvl),
-			"EDGE": d.trigEdge, "COUPLING": d.trigCpl, "HOLDOFF": "100ns",
+		"IDN":       "owon_v1.2",
+		"MODEL":     "HDS272S_1",
+		"Trig": map[string]any{"Mode": "SINGle", "Type": "Edge", "Items": map[string]any{
+			"Channel": fmt.Sprintf("CH%d", d.trigSrc+1), "Level": fmtVolts(d.trigLvl),
+			"Edge": d.trigEdge, "Coupling": d.trigCpl, "Sweep": d.sweep,
 		}},
 	}
 	b, _ := json.Marshal(h)
@@ -439,9 +459,9 @@ func (d *Device) samples(idx int) []byte {
 		d.acquire()
 	}
 	raw := d.last[idx]
-	out := make([]byte, 2*len(raw))
+	out := make([]byte, len(raw))
 	for i, r := range raw {
-		binary.LittleEndian.PutUint16(out[2*i:], uint16(int16(r)))
+		out[i] = byte(int8(r))
 	}
 	return out
 }
@@ -475,8 +495,8 @@ func (d *Device) acquire() {
 				continue
 			}
 			a, b := src[j-1], src[j]
-			if (d.trigEdge == "RISE" && a < d.trigLvl && b >= d.trigLvl) ||
-				(d.trigEdge == "FALL" && a > d.trigLvl && b <= d.trigLvl) {
+			if (d.trigEdge == "RISe" && a < d.trigLvl && b >= d.trigLvl) ||
+				(d.trigEdge == "FALl" && a > d.trigLvl && b <= d.trigLvl) {
 				center, d.trigged = j, true
 				break
 			}
@@ -485,13 +505,13 @@ func (d *Device) acquire() {
 			break
 		}
 	}
-	if !d.trigged && d.sweep != "AUTO" && d.last[0] != nil {
+	if !d.trigged && d.sweep != "AUTo" && d.last[0] != nil {
 		return // normal and single sweeps wait for a trigger
 	}
-	if d.trigged && strings.HasPrefix(d.sweep, "SING") {
+	if d.trigged && d.sweep == "SINGle" {
 		d.running = false
 	}
-	start := center - points/2 - int(math.Round(d.hoffset*hds.DivPixels))
+	start := center - points/2 + int(math.Round(d.hoffset*hds.DivSamples))
 	start = max(0, min(n-points, start))
 	for i, c := range d.ch {
 		raw := make([]int, points)
@@ -503,6 +523,26 @@ func (d *Device) acquire() {
 	}
 }
 
+// waves maps the long and short forms of a wave name to the spelling the
+// device replies with.
+var waves = func() map[string]string {
+	m := map[string]string{}
+	for _, w := range strings.Fields("SINe SQUare RAMP PULSe AmpALT AttALT StairDn StairUD StairUp Besselj Bessely Sinc") {
+		m[strings.ToUpper(w)] = w
+		m[shortName(w)] = w
+	}
+	return m
+}()
+
+func shortName(k string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' {
+			return -1
+		}
+		return r
+	}, k)
+}
+
 func (d *Device) genValue(t float64) float64 {
 	g := d.gen
 	if !g.on {
@@ -511,12 +551,12 @@ func (d *Device) genValue(t float64) float64 {
 	ph := math.Mod(t*g.freq, 1)
 	a := g.amp / 2
 	var v float64
-	switch {
-	case strings.HasPrefix(g.wave, "SQU"):
+	switch g.wave {
+	case "SQUare":
 		v = sign(ph < 0.5)
-	case strings.HasPrefix(g.wave, "PULS"):
+	case "PULSe":
 		v = sign(ph < g.duty/100)
-	case g.wave == "RAMP":
+	case "RAMP":
 		s := g.symmetry / 100
 		switch {
 		case s <= 0:
@@ -526,7 +566,7 @@ func (d *Device) genValue(t float64) float64 {
 		default:
 			v = 1 - 2*(ph-s)/(1-s)
 		}
-	case g.wave == "SINC":
+	case "Sinc":
 		x := (ph - 0.5) * 8 * math.Pi
 		v = 1
 		if x != 0 {
@@ -564,22 +604,20 @@ func lowPass(in []float64, d *Device, t0, dt float64) []float64 {
 }
 
 func (d *Device) dmmReading() string {
-	vals := map[string]struct {
-		v    float64
-		unit string
-	}{
-		"DCV": {1.2345, "V"}, "ACV": {0.7071, "V"}, "DCA": {0.0123, "A"}, "ACA": {0.0087, "A"},
-		"RES": {4702, "Ω"}, "DIOD": {0.612, "V"}, "CONT": {12.3, "Ω"}, "CAP": {1.02e-7, "F"},
+	// The device replies with a bare number, "0.0000e+00", without a unit.
+	vals := map[string]float64{
+		"DCV": 1.2345, "ACV": 0.7071, "DCA": 0.0123, "ACA": 0.0087,
+		"RES": 4702, "DIOD": 0.612, "CONT": 12.3, "CAP": 1.02e-7,
 	}
 	r, ok := vals[d.dmmFunc]
 	if !ok {
-		return "----"
+		return "0.0000e+00"
 	}
-	v := r.v * (1 + rand.NormFloat64()*0.0005)
+	v := r * (1 + rand.NormFloat64()*0.0005)
 	if d.dmmRel {
-		v -= r.v
+		v -= r
 	}
-	return strconv.FormatFloat(v, 'g', 5, 64) + r.unit
+	return strconv.FormatFloat(v, 'e', 4, 64)
 }
 
 func minusMean(v []float64) []float64 {
@@ -613,15 +651,22 @@ func pick125(v, floor float64) float64 {
 	return 10 * e
 }
 
+// fmtVolts prints volts as the device does: "1.00 V", "500mV", "0.00pV".
 func fmtVolts(v float64) string {
-	unit, x := "v", v
-	if math.Abs(v) < 1 {
-		unit, x = "mv", v*1000
+	switch av := math.Abs(v); {
+	case av == 0:
+		return "0.00pV"
+	case av < 1:
+		return fmt3(v*1000) + "mV"
+	case av >= 1000:
+		return fmt3(v/1000) + "kV"
 	}
-	if math.Abs(v) >= 1000 {
-		unit, x = "kv", v/1000
-	}
-	return fmt3(x) + unit
+	return fmt3(v) + " V"
+}
+
+// quantize rounds divisions to whole sample counts, as the device does.
+func quantize(div float64) float64 {
+	return math.Round(div*hds.DivPixels) / hds.DivPixels
 }
 
 func fmtSeconds(s float64) string {
@@ -643,11 +688,11 @@ func fmtSeconds(s float64) string {
 func fmtRate(r float64) string {
 	switch {
 	case r >= 1e6:
-		return strconv.FormatFloat(r/1e6, 'g', 4, 64) + "MS/s"
+		return strconv.FormatFloat(r/1e6, 'g', 4, 64) + "MSa/s"
 	case r >= 1e3:
-		return strconv.FormatFloat(r/1e3, 'g', 4, 64) + "kS/s"
+		return strconv.FormatFloat(r/1e3, 'g', 4, 64) + "KSa/s"
 	}
-	return strconv.FormatFloat(r, 'g', 4, 64) + "S/s"
+	return strconv.FormatFloat(r, 'g', 4, 64) + "Sa/s"
 }
 
 // fmt3 prints three significant digits: 1.00, 10.0, 100.

@@ -108,7 +108,8 @@ function draw() {
   const src = (props.scope['trig.source'] || 'CH1').toLowerCase()
   if (td != null) marker(g, r.x + r.w + 4, r.cy - td * r.div, r, 'right', colors[src] ?? colors.ch1, 'T')
   const hoff = parseFloat(props.scope['hor.offset']) || 0
-  const tx = Math.max(r.x, Math.min(r.x + r.w, r.cx + hoff * r.div))
+  // A positive offset moves the trigger point left of the centre.
+  const tx = Math.max(r.x, Math.min(r.x + r.w, r.cx - hoff * r.div))
   g.fillStyle = colors.accent
   g.beginPath()
   g.moveTo(tx - 6, r.y - 11)
@@ -179,7 +180,7 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
   if (!f) return
   const xdiv = (mx - r.x) / r.div
   const hoff = parseFloat(props.scope['hor.offset']) || 0
-  const rows: [string, string][] = [['t', eng((xdiv - DIVX / 2 - hoff) * f.timeDiv, 'с', 4)]]
+  const rows: [string, string][] = [['t', eng((xdiv - DIVX / 2 + hoff) * f.timeDiv, 'с', 4)]]
   for (const name of ['ch1', 'ch2'] as const) {
     const { ch, on } = chInfo(name)
     if (!on || !ch?.raw?.length) continue

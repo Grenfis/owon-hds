@@ -52,7 +52,8 @@ async function exportCSV() {
   const n = Math.max(...chans.map((c) => c.raw!.length))
   const lines = [`# OWON HDS272S, ${f.timeScale}/div, ${f.sampleRate}; time from trigger point`, ['t_s', ...chans.map((c) => `${c.name}_V`)].join(',')]
   for (let i = 0; i < n; i++) {
-    const t = ((i / (n - 1)) * 12 - 6 - f.hOffset) * f.timeDiv
+    // A positive offset puts the trigger point hOffset divisions left of centre.
+    const t = ((i / (n - 1)) * 12 - 6 + f.hOffset) * f.timeDiv
     lines.push([t.toPrecision(6), ...chans.map((c) => (((c.raw![i] - c.offset) / 25) * c.voltsPerDiv).toPrecision(5))].join(','))
   }
   await save(`hds272s_${stamp()}.csv`, new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }))

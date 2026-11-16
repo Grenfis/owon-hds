@@ -34,11 +34,11 @@ var params = func() map[string]param {
 		"hor.offset":    {cmd: ":HORizontal:OFFSet %s", kind: kindNumber, min: -10000, max: 10000},
 		"acq.mode":      {cmd: ":ACQuire:MODe %s", kind: kindEnum, enum: []string{"SAMPle", "PEAK"}},
 		"acq.depmem":    {cmd: ":ACQuire:DEPMem %s", kind: kindEnum, enum: []string{"4K", "8K"}},
-		"trig.source":   {cmd: ":TRIGger:SINGle:SOURce %s", kind: kindEnum, enum: []string{"CH1", "CH2"}},
+		"trig.source":   {cmd: ":TRIGger:SINGle:EDGe:SOURce %s", kind: kindEnum, enum: []string{"CH1", "CH2"}},
 		"trig.edge":     {cmd: ":TRIGger:SINGle:EDGe %s", kind: kindEnum, enum: []string{"RISE", "FALL"}},
 		"trig.level":    {cmd: ":TRIGger:SINGle:EDGe:LEVel %s", kind: kindUnit},
-		"trig.sweep":    {cmd: ":TRIGger:SINGle:SWEep %s", kind: kindEnum, enum: []string{"AUTO", "NORMal", "SINGle"}},
-		"trig.coupling": {cmd: ":TRIGger:SINGle:COUPling %s", kind: kindEnum, enum: []string{"DC", "AC"}},
+		"trig.sweep":    {cmd: ":TRIGger:SWEep %s", kind: kindEnum, enum: []string{"AUTO", "NORMal", "SINGle"}},
+		"trig.coupling": {cmd: ":TRIGger:COUPling %s", kind: kindEnum, enum: []string{"DC", "AC"}},
 		"run":           {cmd: ":RUNning %s", kind: kindEnum, enum: []string{"RUN", "STOP"}},
 		"auto":          {cmd: ":AUToseton", kind: kindNone},
 		"meas.display":  {cmd: ":MEASurement:DISPlay %s", kind: kindEnum, enum: onOff},
@@ -128,7 +128,8 @@ var blockedRoots = map[string]bool{
 	"VOLFULL": true,
 }
 
-func blocked(cmd string) bool {
+// Blocked reports whether cmd starts with one of blockedRoots.
+func Blocked(cmd string) bool {
 	header, _, _ := strings.Cut(strings.TrimSpace(cmd), " ")
 	root, _, _ := strings.Cut(strings.Trim(strings.ToUpper(header), ":*?"), ":")
 	return blockedRoots[strings.TrimSuffix(root, "?")]

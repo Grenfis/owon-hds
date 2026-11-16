@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { TIMEBASES, eng, signed } from '../format'
+import { TIMEBASES, eng } from '../format'
 import { frame, scope, set, setTrigLevel } from '../state'
 import ChannelCard from './ChannelCard.vue'
 import ListStepper from './ListStepper.vue'
@@ -16,7 +16,10 @@ const level = computed(() => parseFloat(scope['trig.level']) || 0)
 // The level slider covers the screen height of the source channel.
 const levelMin = computed(() => (-4 - srcOffset.value) * vdiv.value)
 const levelMax = computed(() => (4 - srcOffset.value) * vdiv.value)
+// The device offset is positive when the trigger point is left of the
+// centre; the slider shows where the trigger point is, so it runs the other way.
 const hoff = computed(() => parseFloat(scope['hor.offset']) || 0)
+const delay = computed(() => hoff.value * (frame.value?.timeDiv ?? 0))
 
 const setLevel = setTrigLevel
 
@@ -48,9 +51,9 @@ const DEPTHS = [{ value: '4K', label: '4K' }, { value: '8K', label: '8K' }]
         <span class="lbl">Время</span>
         <ListStepper :options="TIMEBASES" :model-value="scope['hor.scale']" unit="/дел" :disabled="disabled" @update:model-value="set('hor.scale', $event)" />
         <span class="lbl">Сдвиг</span>
-        <div class="slider">
-          <input type="range" min="-6" max="6" step="0.04" :value="hoff" :disabled="disabled" @input="set('hor.offset', (+($event.target as HTMLInputElement).value).toFixed(2))" />
-          <span class="mono val">{{ signed(hoff) }}</span>
+        <div class="slider" title="Положение точки синхронизации (▼ над экраном). Справа показана задержка центра экрана от неё">
+          <input type="range" min="-6" max="6" step="0.04" :value="-hoff" :disabled="disabled" @input="set('hor.offset', (-($event.target as HTMLInputElement).value).toFixed(2))" />
+          <span class="mono val wide">{{ hoff ? eng(delay, 'с', 3) : '0' }}</span>
           <button class="ghost zero" :disabled="disabled || hoff === 0" title="На центр" @click="set('hor.offset', '0')">0</button>
         </div>
         <span class="lbl">Сбор</span>

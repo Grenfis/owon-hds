@@ -262,7 +262,9 @@ type Frame struct {
 	DepMem     string         `json:"depMem"`
 	Trig       FrameTrig      `json:"trig"`
 	Channels   []FrameChannel `json:"channels"`
-	FPS        float64        `json:"fps"`
+	// Pair relates CH2 to CH1 when both are on.
+	Pair *hds.Pair `json:"pair"`
+	FPS  float64   `json:"fps"`
 }
 
 func (a *App) frame(c *hds.Client) (*Frame, error) {
@@ -316,6 +318,15 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 			}
 		}
 		f.Channels = append(f.Channels, ch)
+	}
+	if len(f.Channels) == 2 && f.Channels[0].On && f.Channels[1].On && len(f.Channels[0].Raw) > 0 {
+		a, b := f.Channels[0].Meas, f.Channels[1].Meas
+		var period float64
+		if a.Period != nil {
+			period = *a.Period
+		}
+		p := hds.Relate(a, b, period, f.TimeDiv*hds.DivsX/float64(len(f.Channels[0].Raw)))
+		f.Pair = &p
 	}
 	return f, nil
 }

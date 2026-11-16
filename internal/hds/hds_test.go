@@ -128,3 +128,122 @@ func TestMeasureFlat(t *testing.T) {
 		t.Errorf("flat trace: freq %v pp %v", m.Freq, m.Pp)
 	}
 }
+
+// pulse returns a 1 kHz pulse train over 6 ms in 600 samples: base −1 V,
+// top 1 V, a linear rise of 4 samples (40 µs) and an overshoot of 0.2 V on
+// the first sample after it, high for duty of the period.
+func pulse(duty float64) ([]float64, []int) {
+	const n = 600
+	v := make([]float64, n)
+	raw := make([]int, n)
+	for i := range v {
+		p := float64(i%100) + 0.5 // centred, so that edges fall between samples
+		switch {
+		case p < 4:
+			v[i] = -1 + 2*p/4
+		case p < 5:
+			v[i] = 1.2
+		case p < duty*100:
+			v[i] = 1
+		default:
+			v[i] = -1
+		}
+		raw[i] = int(math.Round(v[i] * 25))
+		v[i] = float64(raw[i]) / 25
+	}
+	return v, raw
+}
+
+func TestMeasurePulse(t *testing.T) {
+	v, raw := pulse(0.3)
+	m := Measure(v, raw, 6e-3/600)
+	near := func(name string, got *float64, want, tol float64) {
+		t.Helper()
+		if got == nil || math.Abs(*got-want) > tol {
+			t.Errorf("%s = %v, want %g", name, deref(got), want)
+		}
+	}
+	near("top", m.Top, 1, 0.01)
+	near("base", m.Base, -1, 0.01)
+	near("amp", m.Amp, 2, 0.02)
+	near("pp", m.Pp, 2.2, 0.02)
+	near("overshoot", m.Overshoot, 10, 0.5)
+	near("preshoot", m.Preshoot, 0, 0.5)
+	// 10–90 % of a 4-sample linear rise is 3.2 samples.
+	near("rise", m.Rise, 32e-6, 3e-6)
+	near("pwidth", m.PWidth, 300e-6-20e-6, 12e-6)
+	near("nwidth", m.NWidth, 700e-6+20e-6, 12e-6)
+	near("freq", m.Freq, 1000, 1)
+	near("duty", m.Duty, 28, 1.5)
+	// A 0.3 duty pulse of ±1 V has a mean near −0.4 V over whole periods.
+	near("cycAvg", m.CycAvg, -0.4, 0.05)
+}
+
+func TestMeasureSineLevels(t *testing.T) {
+	// A sine has no flat top: top and base are the extremes.
+	const n = 600
+	v := make([]float64, n)
+	raw := make([]int, n)
+	for i := range v {
+		raw[i] = int(math.Round(60 * math.Sin(2*math.Pi*5*float64(i)/n)))
+		v[i] = float64(raw[i]) / 25
+	}
+	m := Measure(v, raw, 1e-6)
+	if *m.Top != *m.Max || *m.Base != *m.Min {
+		t.Errorf("top %g base %g, want max %g min %g", *m.Top, *m.Base, *m.Max, *m.Min)
+	}
+	// AC RMS of a 2.4 V amplitude sine.
+	if math.Abs(*m.AcRms-2.4/math.Sqrt2) > 0.02 {
+		t.Errorf("acRms = %g", *m.AcRms)
+	}
+}
+
+func TestRelate(t *testing.T) {
+	// CH2 is CH1 at half the amplitude, 45° later: an RC filter at its cutoff
+	// would give 0.707 and the same lag.
+	const n, cycles = 600, 5.0
+	dt := 6e-3 / n
+	mk := func(amp, lag float64) Measurements {
+		v := make([]float64, n)
+		raw := make([]int, n)
+		for i := range v {
+			raw[i] = int(math.Round(amp * 25 * math.Sin(2*math.Pi*cycles*float64(i)/n-lag)))
+			v[i] = float64(raw[i]) / 25
+		}
+		return Measure(v, raw, dt)
+	}
+	a, b := mk(2, 0), mk(1, math.Pi/4)
+	p := Relate(a, b, *a.Period, dt)
+	period := 6e-3 / cycles
+	if p.Phase == nil || math.Abs(*p.Phase+45) > 2 {
+		t.Errorf("phase = %v, want −45", deref(p.Phase))
+	}
+	if p.Delay == nil || math.Abs(*p.Delay-period/8) > period/100 {
+		t.Errorf("delay = %v, want %g", deref(p.Delay), period/8)
+	}
+	if p.Gain == nil || math.Abs(*p.Gain-0.5) > 0.02 {
+		t.Errorf("gain = %v, want 0.5", deref(p.Gain))
+	}
+	// An offset and a noise spike move the 50 % level of CH2, but not the
+	// phase of its fundamental.
+	b = mk(1, math.Pi/4)
+	for i := range b.v {
+		b.v[i] += 0.3
+	}
+	b.v[123] += 0.5
+	if p = Relate(a, b, *a.Period, dt); p.Phase == nil || math.Abs(*p.Phase+45) > 1 {
+		t.Errorf("phase with offset = %v, want −45", deref(p.Phase))
+	}
+	// Leading by 170° stays +170°, not −190°.
+	b = mk(1, -170*math.Pi/180)
+	if p = Relate(a, b, *a.Period, dt); p.Phase == nil || math.Abs(*p.Phase-170) > 3 {
+		t.Errorf("phase = %v, want 170", deref(p.Phase))
+	}
+}
+
+func deref(f *float64) any {
+	if f == nil {
+		return nil
+	}
+	return *f
+}

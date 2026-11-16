@@ -4,7 +4,7 @@
 // the output scaled from its level before an edge of CH1 to its level at
 // the end of the half period, averaged over edges and frames.
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { TIMEBASES, closest, eng, probeFactor, stamp, vdivOptions } from '../format'
+import { TIMEBASES, closest, eng, fitScale, probeFactor, stamp, vdivOptions } from '../format'
 import { gen, set, setGen, setTrigLevel } from '../state'
 import { average, metrics, steps, type Step, type StepMetrics } from '../step'
 import type { Frame } from '../types'
@@ -113,7 +113,7 @@ function prepare() {
     const m = ch.meas
     if (m.pp == null || m.clipped) continue
     const scales = vdivOptions(probeFactor(ch.probe))
-    const v = scales.find((o) => m.pp! / o.value <= 6) ?? scales[scales.length - 1]
+    const v = fitScale(ch.probe, m.pp)
     if (v.value !== scales[closest(scales, ch.voltsPerDiv)].value) set(`${k}.scale`, v.cmd)
     const centre = m.top != null && m.base != null ? (m.top + m.base) / 2 : (m.avg ?? 0)
     set(`${k}.offset`, Math.max(-8, Math.min(8, -centre / v.value)).toFixed(2))

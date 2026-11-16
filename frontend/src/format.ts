@@ -79,6 +79,13 @@ export function closest(options: Option[], v: number): number {
   return best
 }
 
+// fitScale returns the finest vertical scale that keeps a swing of pp
+// within six divisions.
+export function fitScale(probe: string, pp: number): Option {
+  const opts = vdivOptions(probeFactor(probe))
+  return opts.find((o) => pp / o.value <= 6) ?? opts[opts.length - 1]
+}
+
 export function probeFactor(p: string): number {
   const f = parseFloat(p)
   return Number.isFinite(f) && f > 0 ? f : 1

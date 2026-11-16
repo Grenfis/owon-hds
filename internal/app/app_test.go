@@ -183,8 +183,7 @@ func TestSweep(t *testing.T) {
 			t.Errorf("%g Hz: no result, %s", p.Freq, p.Note)
 			continue
 		}
-		// The simulator's discrete filter lags about a degree more.
-		if math.Abs(*p.Gain/gain-1) > 0.03 || math.Abs(*p.Phase-phase) > 2.5 {
+		if math.Abs(*p.Gain/gain-1) > 0.01 || math.Abs(*p.Phase-phase) > 0.5 {
 			t.Errorf("%g Hz: gain %.3f phase %.1f, want %.3f %.1f", p.Freq, *p.Gain, *p.Phase, gain, phase)
 		}
 	}

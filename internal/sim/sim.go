@@ -604,8 +604,10 @@ func lowPass(in []float64, d *Device, t0, dt float64) []float64 {
 	}
 	h := tau / 20
 	y := d.genValue(t0 - 10*tau)
+	// The input is taken in the middle of each step: at its start the
+	// output would lag by half a step, a degree at 10 kHz and 1 µs steps.
 	for t := t0 - 10*tau; t < t0; t += h {
-		y += (d.genValue(t) - y) * (1 - math.Exp(-h/tau))
+		y += (d.genValue(t+h/2) - y) * (1 - math.Exp(-h/tau))
 	}
 	steps := min(100, max(1, int(math.Ceil(dt/h))))
 	hs := dt / float64(steps)
@@ -613,7 +615,7 @@ func lowPass(in []float64, d *Device, t0, dt float64) []float64 {
 	for i := range in {
 		out[i] = y
 		for s := 0; s < steps; s++ {
-			y += (d.genValue(t0+float64(i)*dt+float64(s)*hs) - y) * k
+			y += (d.genValue(t0+float64(i)*dt+(float64(s)+0.5)*hs) - y) * k
 		}
 	}
 	return out

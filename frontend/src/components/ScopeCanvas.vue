@@ -1,10 +1,13 @@
 <script setup lang="ts">
 // The oscilloscope screen: 12 × 8 divisions, 25 sample counts per division,
 // as on the device. Channel ground markers on the left and the trigger level
-// marker on the right can be dragged. With stretch the screen fills its box,
-// and a division is wider than it is tall.
+// marker on the right can be dragged, and so can the cursors on the screen.
+// With stretch the screen fills its box, and a division is wider than it is
+// tall.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { hasT, hasV, levelAt, sampleAt, snapT, snapV, timeAt, voltsAt } from '../cursors'
 import { eng } from '../format'
+import { cursors } from '../state'
 import type { Frame } from '../types'
 
 const props = defineProps<{ frame: Frame | null; scope: Record<string, string>; stretch?: boolean }>()
@@ -16,7 +19,8 @@ const M = { l: 28, r: 28, t: 16, b: 8 }
 const box = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const hover = ref<{ x: number; y: number } | null>(null)
-const drag = ref<{ kind: 'ch1' | 'ch2' | 'trig'; div: number } | null>(null)
+type Drag = { kind: 'ch1' | 'ch2' | 'trig'; div: number } | { kind: 't'; i: 0 | 1 } | { kind: 'v'; i: 0 | 1 }
+const drag = ref<Drag | null>(null)
 let colors: Record<string, string> = {}
 let size = { w: 0, h: 0, dpr: 1 }
 let raf = 0
@@ -119,7 +123,117 @@ function draw() {
   g.lineTo(tx, r.y - 3)
   g.fill()
 
+  drawCursors(g, r)
   if (hover.value && !drag.value) drawHover(g, r, hover.value.x)
+}
+
+// drawCursors draws the cursor lines and, in the lower left corner, what
+// they read: the time cursors the interval and every channel at them, the
+// voltage cursors the levels of their channel.
+function drawCursors(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
+  const mode = cursors.mode
+  if (mode === 'off') return
+  const src = cursors.src
+  g.save()
+  g.beginPath()
+  g.rect(r.x, r.y, r.w, r.h)
+  g.clip()
+  g.lineWidth = 1
+  g.font = '600 10px Segoe UI, sans-serif'
+  g.setLineDash([6, 4])
+  if (hasT(mode)) {
+    g.strokeStyle = 'rgba(230,232,237,.7)'
+    g.fillStyle = '#e6e8ed'
+    g.textAlign = 'left'
+    g.textBaseline = 'top'
+    cursors.t.forEach((t, i) => {
+      const x = r.x + t * r.dx
+      g.beginPath()
+      line(g, x, r.y, x, r.y + r.h)
+      g.stroke()
+      g.fillText(String(i + 1), x + 3, r.y + 3)
+    })
+  }
+  if (hasV(mode)) {
+    g.strokeStyle = colors[src]
+    g.fillStyle = colors[src]
+    g.textAlign = 'right'
+    g.textBaseline = 'bottom'
+    cursors.v.forEach((v, i) => {
+      const y = r.cy - v * r.dy
+      g.beginPath()
+      line(g, r.x, y, r.x + r.w, y)
+      g.stroke()
+      g.fillText(String(i + 1), r.x + r.w - 4, y - 2)
+    })
+  }
+  g.setLineDash([])
+  g.restore()
+
+  const f = props.frame
+  if (!f) return
+  const rows: { label: string; color: string; text: string }[] = []
+  const pair = (a: number, b: number, unit: string) => `${eng(b - a, unit, 4)}   ${eng(a, unit, 3)} / ${eng(b, unit, 3)}`
+  if (hasT(mode) && f.timeDiv > 0) {
+    const hoff = parseFloat(props.scope['hor.offset']) || 0
+    const [ta, tb] = cursors.t.map((x) => timeAt(x, f.timeDiv, hoff))
+    const dt = tb - ta
+    rows.push({ label: 'Δt', color: '#e6e8ed', text: dt ? `${eng(dt, 'с', 4)}   ${eng(1 / Math.abs(dt), 'Гц', 4)}` : '0' })
+    for (const name of ['ch1', 'ch2'] as const) {
+      const { ch, on } = chInfo(name)
+      if (!on || !ch?.raw || ch.raw.length < 2) continue
+      const [va, vb] = cursors.t.map((x) => voltsAt(sampleAt(ch.raw!, x), ch.offset, ch.voltsPerDiv))
+      rows.push({ label: name.toUpperCase(), color: colors[name], text: pair(va, vb, 'В') })
+    }
+  }
+  if (hasV(mode)) {
+    const { ch } = chInfo(src)
+    if (ch?.voltsPerDiv) {
+      const [va, vb] = cursors.v.map((y) => levelAt(y, ch.offset, ch.voltsPerDiv))
+      rows.push({ label: 'ΔV', color: colors[src], text: pair(va, vb, 'В') })
+    }
+  }
+  if (!rows.length) return
+  g.font = '12px Cascadia Mono, Consolas, monospace'
+  const w = 52 + Math.max(...rows.map((row) => g.measureText(row.text).width)) + 12
+  const h = rows.length * 17 + 8
+  const bx = r.x + 8, by = r.y + r.h - h - 8
+  g.fillStyle = 'rgba(20,23,30,.85)'
+  g.strokeStyle = '#323947'
+  g.beginPath()
+  g.roundRect(bx, by, w, h, 6)
+  g.fill()
+  g.stroke()
+  g.textBaseline = 'middle'
+  rows.forEach((row, i) => {
+    const y = by + 13 + i * 17
+    g.textAlign = 'left'
+    g.fillStyle = row.color
+    g.fillText(row.label, bx + 9, y)
+    g.textAlign = 'right'
+    g.fillStyle = '#e6e8ed'
+    g.fillText(row.text, bx + w - 9, y)
+  })
+}
+
+// cursorAt finds the cursor line within a few pixels of a point on the
+// screen, the nearest when two are close.
+function cursorAt(p: { x: number; y: number }, r: ReturnType<typeof plotRect>): Drag | null {
+  if (p.x < r.x || p.x > r.x + r.w || p.y < r.y || p.y > r.y + r.h) return null
+  let best: Drag | null = null, bd = 8
+  if (hasT(cursors.mode)) {
+    cursors.t.forEach((t, i) => {
+      const d = Math.abs(p.x - (r.x + t * r.dx))
+      if (d < bd) [best, bd] = [{ kind: 't', i: i as 0 | 1 }, d]
+    })
+  }
+  if (hasV(cursors.mode)) {
+    cursors.v.forEach((v, i) => {
+      const d = Math.abs(p.y - (r.cy - v * r.dy))
+      if (d < bd) [best, bd] = [{ kind: 'v', i: i as 0 | 1 }, d]
+    })
+  }
+  return best
 }
 
 function line(g: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
@@ -235,6 +349,8 @@ function down(e: MouseEvent) {
   } else if (p.x > r.x + r.w) {
     const td = trigDiv()
     if (td != null && near(r.cy - td * r.dy)) drag.value = { kind: 'trig', div: td }
+  } else {
+    drag.value = cursorAt(p, r)
   }
   if (drag.value) {
     window.addEventListener('mousemove', dragMove)
@@ -245,15 +361,22 @@ function down(e: MouseEvent) {
 function dragMove(e: MouseEvent) {
   if (!drag.value) return
   const r = plotRect()
+  const d = drag.value
+  if (d.kind === 't' || d.kind === 'v') {
+    const p = pos(e)
+    if (d.kind === 't') cursors.t[d.i] = snapT((p.x - r.x) / r.dx)
+    else cursors.v[d.i] = snapV((r.cy - p.y) / r.dy)
+    return
+  }
   const div = snap((r.cy - pos(e).y) / r.dy)
-  if (div === drag.value.div) return
-  drag.value = { ...drag.value, div }
-  if (drag.value.kind === 'trig') {
+  if (div === d.div) return
+  drag.value = { ...d, div }
+  if (d.kind === 'trig') {
     const src = (props.scope['trig.source'] || 'CH1').toLowerCase() as 'ch1' | 'ch2'
     const { vdiv, offsetDiv } = chInfo(src)
     emit('level', (div - offsetDiv) * vdiv)
   } else {
-    emit('offset', drag.value.kind, div)
+    emit('offset', d.kind, div)
   }
   schedule()
 }
@@ -268,7 +391,8 @@ function move(e: MouseEvent) {
   hover.value = pos(e)
   const p = hover.value, r = plotRect()
   const c = canvas.value!
-  c.style.cursor = p.x < r.x || p.x > r.x + r.w ? 'ns-resize' : 'crosshair'
+  const hit = drag.value ?? cursorAt(p, r)
+  c.style.cursor = p.x < r.x || p.x > r.x + r.w || hit?.kind === 'v' ? 'ns-resize' : hit?.kind === 't' ? 'ew-resize' : 'crosshair'
   schedule()
 }
 
@@ -292,6 +416,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => ro?.disconnect())
 watch(() => [props.frame, { ...props.scope }, props.stretch], schedule, { deep: false })
+watch(cursors, schedule, { deep: true })
 </script>
 
 <template>

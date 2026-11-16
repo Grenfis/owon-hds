@@ -1,7 +1,24 @@
-import { computed, reactive, ref, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { call, on } from './api'
+import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
+
+// Screen cursors, kept between runs.
+const CURSORS_KEY = 'owon.cursors'
+const freshCursors = (): Cursors => ({ ...DEFAULT_CURSORS, t: [...DEFAULT_CURSORS.t], v: [...DEFAULT_CURSORS.v] })
+export const cursors = reactive<Cursors>(freshCursors())
+try {
+  const c = JSON.parse(localStorage.getItem(CURSORS_KEY) ?? '{}')
+  if (Array.isArray(c.t) && c.t.length === 2 && Array.isArray(c.v) && c.v.length === 2) Object.assign(cursors, c)
+} catch {}
+watch(cursors, () => localStorage.setItem(CURSORS_KEY, JSON.stringify(cursors)), { deep: true })
+
+// resetCursors puts the cursors back to their places and keeps the mode.
+export function resetCursors() {
+  const { t, v } = freshCursors()
+  Object.assign(cursors, { t, v })
+}
 
 export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
 export const frame = shallowRef<Frame | null>(null)

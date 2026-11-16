@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { TIMEBASES, eng } from '../format'
-import { frame, scope, set, setTrigLevel } from '../state'
+import { hasV } from '../cursors'
+import { cursors, frame, resetCursors, scope, set, setTrigLevel } from '../state'
 import ChannelCard from './ChannelCard.vue'
 import ListStepper from './ListStepper.vue'
 import Seg from './Seg.vue'
@@ -38,6 +39,13 @@ const SWEEPS = [
 const COUPLING = [{ value: 'DC', label: 'DC' }, { value: 'AC', label: 'AC' }]
 const MODES = [{ value: 'SAMPle', label: 'Выборка' }, { value: 'PEAK', label: 'Пиковый' }]
 const DEPTHS = [{ value: '4K', label: '4K' }, { value: '8K', label: '8K' }]
+const CURSOR_MODES = [
+  { value: 'off', label: 'Выкл' },
+  { value: 't', label: 'Время', title: 'Две вертикальные линии: интервал, частота и напряжения каналов в этих точках' },
+  { value: 'v', label: 'Напряж.', title: 'Две горизонтальные линии: уровни выбранного канала и разница между ними' },
+  { value: 'tv', label: 'Оба', title: 'Обе пары линий' },
+]
+const CURSOR_SOURCES = [{ value: 'ch1', label: 'CH1' }, { value: 'ch2', label: 'CH2' }]
 </script>
 
 <template>
@@ -88,6 +96,22 @@ const DEPTHS = [{ value: '4K', label: '4K' }, { value: '8K', label: '8K' }]
         </div>
         <span />
         <button class="mid" :disabled="disabled || !srcCh?.meas?.pp" @click="levelToMiddle">Уровень на середину сигнала</button>
+      </div>
+    </section>
+
+    <section>
+      <h3>Курсоры</h3>
+      <div class="grid">
+        <span class="lbl">Показать</span>
+        <Seg v-model="cursors.mode" :options="CURSOR_MODES" />
+        <template v-if="hasV(cursors.mode)">
+          <span class="lbl">Канал</span>
+          <Seg v-model="cursors.src" :options="CURSOR_SOURCES" />
+        </template>
+        <template v-if="cursors.mode !== 'off'">
+          <span />
+          <button class="mid" title="Линии тянутся мышью прямо на экране. Эта кнопка возвращает их на исходные места" @click="resetCursors">Вернуть на место</button>
+        </template>
       </div>
     </section>
   </div>

@@ -7,6 +7,8 @@ import GenPanel from './components/GenPanel.vue'
 import MeasureStrip from './components/MeasureStrip.vue'
 import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
+import SpectrumView from './components/SpectrumView.vue'
+import { stamp } from './format'
 import { connect, disconnect, frame, init, lastError, scope, set, setTrigLevel, status } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
@@ -14,6 +16,10 @@ const view = ref<View>('scope')
 const frozen = ref(false)
 const connecting = ref<'' | 'usb' | 'sim'>('')
 const screen = ref<InstanceType<typeof ScopeCanvas>>()
+
+const FFT_KEY = 'owon.fftShown'
+const fftShown = ref(localStorage.getItem(FFT_KEY) === '1')
+watch(fftShown, (v) => localStorage.setItem(FFT_KEY, v ? '1' : '0'))
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -39,11 +45,6 @@ async function doConnect(mode: 'usb' | 'sim') {
 // Immediate: after a page reload the backend may still poll another view.
 watch(view, (v) => call('SetView', v), { immediate: true })
 watch(frozen, (f) => call('SetAcquire', !f), { immediate: true })
-
-function stamp() {
-  const d = new Date(), p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-}
 
 async function exportCSV() {
   const f = frame.value
@@ -123,6 +124,7 @@ onMounted(init)
           <button :class="{ primary: frozen }" :disabled="!online" title="Не запрашивать новые кадры; прибор продолжает работать" @click="frozen = !frozen">
             {{ frozen ? 'Экран заморожен' : 'Заморозить экран' }}
           </button>
+          <button :class="{ primary: fftShown }" title="Спектр сигнала (FFT) под осциллограммой" @click="fftShown = !fftShown">Спектр</button>
           <div class="info">
             <span v-if="frame" class="state" :class="runState[1]">{{ runState[0] }}</span>
             <span v-if="frame" class="mono">{{ frame.fps.toFixed(1) }} кадр/с</span>
@@ -132,7 +134,7 @@ onMounted(init)
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
@@ -146,6 +148,7 @@ onMounted(init)
             </div>
           </div>
         </ScopeCanvas>
+        <SpectrumView v-if="fftShown" class="spectrum" :frame="frame" @save="save" />
         <MeasureStrip :frame="frame" />
       </div>
       <aside>
@@ -220,6 +223,7 @@ nav { display: flex; gap: 2px; flex: 1; }
 .state.warn { color: var(--warn); }
 .saved { font-size: 12px; color: var(--ok); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas { flex: 1; }
+.spectrum { flex: 1; }
 aside { overflow-y: auto; min-height: 0; padding-right: 2px; }
 .genpanel { grid-column: 1 / -1; }
 .overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }

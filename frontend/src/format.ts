@@ -25,6 +25,12 @@ export function eng(v: number | null | undefined, unit: string, sig = 4, trim = 
   return `${s.replace('-', '−')} ${prefix}${unit}`
 }
 
+// stamp is the local time for file names: 20261116_143005.
+export function stamp(): string {
+  const d = new Date(), p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
+
 export function signed(v: number, digits = 2): string {
   const s = v.toFixed(digits)
   return v > 0 ? `+${s}` : s.replace('-', '−')

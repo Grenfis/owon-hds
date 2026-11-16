@@ -1,12 +1,13 @@
 <script setup lang="ts">
 // The oscilloscope screen: 12 × 8 divisions, 25 sample counts per division,
 // as on the device. Channel ground markers on the left and the trigger level
-// marker on the right can be dragged.
+// marker on the right can be dragged. With stretch the screen fills its box,
+// and a division is wider than it is tall.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { eng } from '../format'
 import type { Frame } from '../types'
 
-const props = defineProps<{ frame: Frame | null; scope: Record<string, string> }>()
+const props = defineProps<{ frame: Frame | null; scope: Record<string, string>; stretch?: boolean }>()
 const emit = defineEmits<{ offset: [ch: 'ch1' | 'ch2', div: number]; level: [volts: number] }>()
 
 const DIVX = 12, DIVY = 8, PX = 25
@@ -22,10 +23,11 @@ let raf = 0
 
 function plotRect() {
   const aw = size.w - M.l - M.r, ah = size.h - M.t - M.b
-  const pw = Math.max(10, Math.min(aw, ah * DIVX / DIVY))
-  const ph = pw * DIVY / DIVX
+  let pw = Math.max(10, Math.min(aw, ah * DIVX / DIVY))
+  let ph = pw * DIVY / DIVX
+  if (props.stretch) [pw, ph] = [Math.max(10, aw), Math.max(10, ah)]
   const x = M.l + (aw - pw) / 2, y = M.t + (ah - ph) / 2
-  return { x, y, w: pw, h: ph, div: pw / DIVX, cx: x + pw / 2, cy: y + ph / 2 }
+  return { x, y, w: pw, h: ph, dx: pw / DIVX, dy: ph / DIVY, cx: x + pw / 2, cy: y + ph / 2 }
 }
 
 function chInfo(name: 'ch1' | 'ch2') {
@@ -65,16 +67,16 @@ function draw() {
   g.strokeStyle = '#20252f'
   g.setLineDash([1, 3])
   g.beginPath()
-  for (let i = 1; i < DIVX; i++) if (i !== DIVX / 2) line(g, r.x + i * r.div, r.y, r.x + i * r.div, r.y + r.h)
-  for (let i = 1; i < DIVY; i++) if (i !== DIVY / 2) line(g, r.x, r.y + i * r.div, r.x + r.w, r.y + i * r.div)
+  for (let i = 1; i < DIVX; i++) if (i !== DIVX / 2) line(g, r.x + i * r.dx, r.y, r.x + i * r.dx, r.y + r.h)
+  for (let i = 1; i < DIVY; i++) if (i !== DIVY / 2) line(g, r.x, r.y + i * r.dy, r.x + r.w, r.y + i * r.dy)
   g.stroke()
   g.setLineDash([])
   g.strokeStyle = '#363d4b'
   g.beginPath()
   line(g, r.cx, r.y, r.cx, r.y + r.h)
   line(g, r.x, r.cy, r.x + r.w, r.cy)
-  for (let i = 0; i <= DIVX * 5; i++) line(g, r.x + i * r.div / 5, r.cy - 3, r.x + i * r.div / 5, r.cy + 3)
-  for (let i = 0; i <= DIVY * 5; i++) line(g, r.cx - 3, r.y + i * r.div / 5, r.cx + 3, r.y + i * r.div / 5)
+  for (let i = 0; i <= DIVX * 5; i++) line(g, r.x + i * r.dx / 5, r.cy - 3, r.x + i * r.dx / 5, r.cy + 3)
+  for (let i = 0; i <= DIVY * 5; i++) line(g, r.cx - 3, r.y + i * r.dy / 5, r.cx + 3, r.y + i * r.dy / 5)
   g.stroke()
   g.strokeStyle = '#2b313d'
   g.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1)
@@ -94,7 +96,7 @@ function draw() {
     g.beginPath()
     const k = r.w / (raw.length - 1)
     for (let i = 0; i < raw.length; i++) {
-      const x = r.x + i * k, y = r.cy - (raw[i] / PX) * r.div
+      const x = r.x + i * k, y = r.cy - (raw[i] / PX) * r.dy
       i ? g.lineTo(x, y) : g.moveTo(x, y)
     }
     g.stroke()
@@ -106,10 +108,10 @@ function draw() {
   // Trigger level and trigger position.
   const td = trigDiv()
   const src = (props.scope['trig.source'] || 'CH1').toLowerCase()
-  if (td != null) marker(g, r.x + r.w + 4, r.cy - td * r.div, r, 'right', colors[src] ?? colors.ch1, 'T')
+  if (td != null) marker(g, r.x + r.w + 4, r.cy - td * r.dy, r, 'right', colors[src] ?? colors.ch1, 'T')
   const hoff = parseFloat(props.scope['hor.offset']) || 0
   // A positive offset moves the trigger point left of the centre.
-  const tx = Math.max(r.x, Math.min(r.x + r.w, r.cx - hoff * r.div))
+  const tx = Math.max(r.x, Math.min(r.x + r.w, r.cx - hoff * r.dx))
   g.fillStyle = colors.accent
   g.beginPath()
   g.moveTo(tx - 6, r.y - 11)
@@ -131,7 +133,7 @@ function groundTags(r: ReturnType<typeof plotRect>) {
   const tags: { name: 'ch1' | 'ch2'; x: number; y: number }[] = []
   for (const name of ['ch1', 'ch2'] as const) {
     const { on, offsetDiv } = chInfo(name)
-    if (on) tags.push({ name, x: r.x - 4, y: r.cy - offsetDiv * r.div })
+    if (on) tags.push({ name, x: r.x - 4, y: r.cy - offsetDiv * r.dy })
   }
   const clamp = (y: number) => Math.max(r.y, Math.min(r.y + r.h, y))
   if (tags.length === 2 && Math.abs(clamp(tags[0].y) - clamp(tags[1].y)) < 16 && r.x >= 50) tags[1].x -= 24
@@ -178,7 +180,7 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
   g.setLineDash([])
   const f = props.frame
   if (!f) return
-  const xdiv = (mx - r.x) / r.div
+  const xdiv = (mx - r.x) / r.dx
   const hoff = parseFloat(props.scope['hor.offset']) || 0
   const rows: [string, string][] = [['t', eng((xdiv - DIVX / 2 + hoff) * f.timeDiv, 'с', 4)]]
   for (const name of ['ch1', 'ch2'] as const) {
@@ -187,7 +189,7 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
     const i = Math.round((xdiv / DIVX) * (ch.raw.length - 1))
     const v = ((ch.raw[i] - ch.offset) / PX) * ch.voltsPerDiv
     rows.push([name.toUpperCase(), eng(v, 'В', 4)])
-    const y = r.cy - (ch.raw[i] / PX) * r.div
+    const y = r.cy - (ch.raw[i] / PX) * r.dy
     g.fillStyle = colors[name]
     g.beginPath()
     g.arc(mx, y, 3, 0, Math.PI * 2)
@@ -232,7 +234,7 @@ function down(e: MouseEvent) {
     if (tag) drag.value = { kind: tag.name, div: chInfo(tag.name).offsetDiv }
   } else if (p.x > r.x + r.w) {
     const td = trigDiv()
-    if (td != null && near(r.cy - td * r.div)) drag.value = { kind: 'trig', div: td }
+    if (td != null && near(r.cy - td * r.dy)) drag.value = { kind: 'trig', div: td }
   }
   if (drag.value) {
     window.addEventListener('mousemove', dragMove)
@@ -243,7 +245,7 @@ function down(e: MouseEvent) {
 function dragMove(e: MouseEvent) {
   if (!drag.value) return
   const r = plotRect()
-  const div = snap((r.cy - pos(e).y) / r.div)
+  const div = snap((r.cy - pos(e).y) / r.dy)
   if (div === drag.value.div) return
   drag.value = { ...drag.value, div }
   if (drag.value.kind === 'trig') {
@@ -289,7 +291,7 @@ onMounted(() => {
   ro.observe(box.value!)
 })
 onBeforeUnmount(() => ro?.disconnect())
-watch(() => [props.frame, { ...props.scope }], schedule, { deep: false })
+watch(() => [props.frame, { ...props.scope }, props.stretch], schedule, { deep: false })
 </script>
 
 <template>

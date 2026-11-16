@@ -9,7 +9,7 @@ import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
 import { stamp } from './format'
-import { connect, disconnect, frame, init, lastError, scope, set, setTrigLevel, status } from './state'
+import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -43,7 +43,13 @@ async function doConnect(mode: 'usb' | 'sim') {
 }
 
 // Immediate: after a page reload the backend may still poll another view.
-watch(view, (v) => call('SetView', v), { immediate: true })
+// The backend also switches the device screen to match the view. Back on
+// the scope, the generator is read again: it may have been changed on the
+// device while it showed the multimeter.
+watch(view, (v, old) => {
+  call('SetView', v)
+  if (v === 'scope' && old && online.value) readGen().catch(() => {})
+}, { immediate: true })
 watch(frozen, (f) => call('SetAcquire', !f), { immediate: true })
 
 async function exportCSV() {

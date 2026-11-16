@@ -57,6 +57,7 @@ type Device struct {
 	acqMode  string
 	depmem   string
 	gen      generator
+	screen   string // OSC, DMM or AG
 	dmmFunc  string
 	dmmRel   bool
 	last     [2][]int
@@ -77,6 +78,7 @@ func New() *Device {
 		trigEdge: "RISe", sweep: "AUTo", trigCpl: "DC",
 		running: true, acqMode: "SAMPle", depmem: "4K",
 		gen:     generator{wave: "SINe", freq: 1e3, amp: 2, duty: 50, symmetry: 50, on: true},
+		screen:  "OSC",
 		dmmFunc: "DCV",
 		Latency: 20 * time.Millisecond,
 	}
@@ -141,6 +143,10 @@ func (d *Device) handle(cmd string) (reply []byte, delay time.Duration) {
 	arg = strings.TrimSpace(arg)
 	query := strings.HasSuffix(header, "?")
 	path := normalize(strings.TrimSuffix(header, "?"))
+	// :MODE is a keyword of its own, not the long form of :MODel.
+	if strings.EqualFold(strings.Trim(header, ":?"), "MODE") {
+		path = "MODE"
+	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -203,6 +209,8 @@ func (d *Device) query(path string) (string, bool) {
 		return "OWON,HDS272S,SIMULATOR,V8.8.2", true
 	case "MOD":
 		return "HDS272S_1", true
+	case "MODE":
+		return d.screen, true
 	case "HOR:SCAL":
 		return short(d.tdiv), true
 	case "HOR:OFFS":
@@ -273,6 +281,12 @@ func (d *Device) set(path, arg string) {
 			return 0, false
 		}
 		return f, true
+	}
+	if path == "MODE" {
+		if up == "OSC" || up == "DMM" || up == "AG" {
+			d.screen = up
+		}
+		return
 	}
 	if c, rest, ok := d.chPath(path); ok {
 		switch rest {

@@ -161,10 +161,21 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	var last time.Time
 	var fps float64
 	misses := 0
-	// The first frame after a scale change or autoset may pair the new scale
-	// with a trace taken at the old one, so it is not shown.
+	// The first frame after a scale change, autoset or screen switch may
+	// pair the new settings with a trace taken before, so it is not shown.
 	skip := false
+	// The device screen, read once, so that a view that already matches it
+	// does not switch it again.
+	screen, _ := c.Query(":MODE?")
 	for ctx.Err() == nil {
+		if want := viewScreens[a.view.Load().(string)]; want != "" && !strings.EqualFold(want, screen) {
+			cmd := ":MODE " + want
+			if err := c.Send(cmd); err != nil {
+				return err
+			}
+			a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
+			screen, skip = want, true
+		}
 		for _, cmd := range a.queue.take() {
 			if err := c.Send(cmd); err != nil {
 				return err
@@ -221,6 +232,10 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 }
 
 var scaleCommand = regexp.MustCompile(`^:(CH[12]:SCAL|AUToseton)`)
+
+// viewScreens is the device screen each view needs: :MODE switches it, and
+// :MODE? reports it. The console leaves the screen as it is.
+var viewScreens = map[string]string{"scope": "OSC", "dmm": "DMM"}
 
 // wait sleeps until d passes, a setting is queued or the context ends.
 func (a *App) wait(ctx context.Context, d time.Duration) {

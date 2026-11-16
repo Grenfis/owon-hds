@@ -101,4 +101,28 @@ func TestSimulatorLoop(t *testing.T) {
 	if _, err := a.Console(":SERial 1"); err == nil {
 		t.Fatal(":SERial was not blocked")
 	}
+
+	// The device screen follows the view; the console leaves it alone.
+	waitScreen := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		var got string
+		for time.Now().Before(deadline) {
+			if r, err := a.Console(":MODE?"); err == nil {
+				if got = r.Reply; got == want {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("screen %q, want %q", got, want)
+	}
+	waitScreen("OSC")
+	a.SetView("dmm")
+	waitScreen("DMM")
+	a.SetView("console")
+	time.Sleep(300 * time.Millisecond)
+	waitScreen("DMM")
+	a.SetView("scope")
+	waitScreen("OSC")
 }

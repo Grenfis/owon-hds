@@ -17,7 +17,7 @@ func TestCommand(t *testing.T) {
 		{"gen.wave", "square", ":FUNCtion SQUare"},
 		{"trig.level", "-250mv", ":TRIGger:SINGle:EDGe:LEVel -250mv"},
 		{"ch1.offset", "-1.24", ":CH1:OFFSet -1.24"},
-		{"auto", "", ":AUToseton"},
+		{"auto", "", ":AUToseton ON"},
 	} {
 		got, err := command(c.key, c.value)
 		if err != nil || got != c.want {

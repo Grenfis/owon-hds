@@ -161,8 +161,8 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	var last time.Time
 	var fps float64
 	misses := 0
-	// The first frame after a scale change pairs the new scale with a trace
-	// taken at the old one, so it is not shown.
+	// The first frame after a scale change or autoset may pair the new scale
+	// with a trace taken at the old one, so it is not shown.
 	skip := false
 	for ctx.Err() == nil {
 		for _, cmd := range a.queue.take() {
@@ -220,7 +220,7 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	return ctx.Err()
 }
 
-var scaleCommand = regexp.MustCompile(`^:CH[12]:SCAL`)
+var scaleCommand = regexp.MustCompile(`^:(CH[12]:SCAL|AUToseton)`)
 
 // wait sleeps until d passes, a setting is queued or the context ends.
 func (a *App) wait(ctx context.Context, d time.Duration) {

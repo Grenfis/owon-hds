@@ -8,9 +8,10 @@
 //   - a :DATa query replies with a 4-byte little-endian length and the payload.
 //
 // After :CH<n>:SCALe the device answers the next waveform query only after
-// about 1.1 s, even if the scale did not change. A reply that comes after the
-// client gave up would be read as the reply to the next query, so the client
-// waits long and, after any failure, throws away what the device still sends.
+// about 1.1 s, even if the scale did not change, and after :AUToseton after
+// about 1.7 s. A reply that comes after the client gave up would be read as
+// the reply to the next query, so the client waits long and, after any
+// failure, throws away what the device still sends.
 package hds
 
 import (
@@ -35,7 +36,7 @@ type Transport interface {
 var ErrTimeout = errors.New("нет ответа от прибора")
 
 const (
-	ioTimeout   = 3 * time.Second
+	ioTimeout   = 5 * time.Second
 	readBufSize = 16 * 1024
 	maxDataSize = 4 << 20
 	// sendQuiet is how long to listen for an unexpected reply to a command

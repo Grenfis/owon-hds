@@ -61,7 +61,7 @@ type Device struct {
 	dmmRel   bool
 	last     [2][]int
 	trigged  bool
-	busy     bool // a scale change delays the next waveform query, as on the device
+	busy     time.Duration // delay of the next waveform query after a scale change or autoset
 	pending  []byte
 	// Latency is added to every waveform query to mimic the real device.
 	Latency time.Duration
@@ -161,14 +161,12 @@ func (d *Device) handle(cmd string) (reply []byte, delay time.Duration) {
 	return nil, 0
 }
 
-// settle returns the extra delay of a waveform query after a scale change:
-// the device answers it about 1.1 s late.
+// settle returns the extra delay of a waveform query after a scale change
+// or autoset, as the device has it.
 func (d *Device) settle() time.Duration {
-	if !d.busy {
-		return 0
-	}
-	d.busy = false
-	return 1100 * time.Millisecond
+	t := d.busy
+	d.busy = 0
+	return t
 }
 
 func (d *Device) data(payload []byte) []byte {
@@ -293,7 +291,7 @@ func (d *Device) set(path, arg string) {
 			if v := hds.ParseUnit(arg); v > 0 {
 				c.scale = v
 			}
-			d.busy = true
+			d.busy = 1100 * time.Millisecond
 		case "OFFS":
 			if v, ok := num(-8, 8); ok {
 				c.offset = quantize(v)
@@ -344,7 +342,11 @@ func (d *Device) set(path, arg string) {
 	case "RUNN":
 		d.running = up == "RUN"
 	case "AUT":
-		d.autoset()
+		// Like the device, ignore the command without an argument.
+		if arg != "" {
+			d.autoset()
+			d.busy = 1700 * time.Millisecond
+		}
 	case "FUNC":
 		if w, ok := waves[up]; ok {
 			d.gen.wave = w

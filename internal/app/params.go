@@ -40,8 +40,10 @@ var params = func() map[string]param {
 		"trig.sweep":    {cmd: ":TRIGger:SWEep %s", kind: kindEnum, enum: []string{"AUTO", "NORMal", "SINGle"}},
 		"trig.coupling": {cmd: ":TRIGger:COUPling %s", kind: kindEnum, enum: []string{"DC", "AC"}},
 		"run":           {cmd: ":RUNning %s", kind: kindEnum, enum: []string{"RUN", "STOP"}},
-		"auto":          {cmd: ":AUToseton", kind: kindNone},
-		"meas.display":  {cmd: ":MEASurement:DISPlay %s", kind: kindEnum, enum: onOff},
+		// The device runs a set handler only when the command has an
+		// argument; the autoset handler ignores it.
+		"auto":         {cmd: ":AUToseton ON", kind: kindNone},
+		"meas.display": {cmd: ":MEASurement:DISPlay %s", kind: kindEnum, enum: onOff},
 
 		"gen.wave": {cmd: ":FUNCtion %s", kind: kindEnum, enum: []string{"SINE", "SQUare", "RAMP", "PULSe",
 			"AmpALT", "AttALT", "StairDn", "StairUD", "StairUp", "Besselj", "Bessely", "Sinc"}},

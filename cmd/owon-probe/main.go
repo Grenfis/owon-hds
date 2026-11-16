@@ -59,6 +59,14 @@ func main() {
 	}
 
 	for _, cmd := range cmds {
+		if d, ok := strings.CutPrefix(cmd, "wait="); ok {
+			if t, err := time.ParseDuration(d); err == nil {
+				time.Sleep(t)
+			}
+			continue
+		}
+		// Arguments may spell line endings as \r and \n.
+		cmd = escapes.Replace(cmd)
 		if app.Blocked(cmd) {
 			fmt.Printf("%-34s refused: factory command\n", cmd)
 			continue
@@ -72,7 +80,7 @@ func main() {
 			if err := c.Send(cmd); err != nil {
 				fmt.Printf("%-34s error: %v\n", cmd, err)
 			} else {
-				fmt.Printf("%-34s sent\n", cmd)
+				fmt.Printf("%-34q sent\n", cmd)
 			}
 			time.Sleep(150 * time.Millisecond)
 			continue
@@ -179,6 +187,8 @@ func rising(b []byte) []int {
 	}
 	return out
 }
+
+var escapes = strings.NewReplacer(`\r`, "\r", `\n`, "\n")
 
 func printable(b []byte) bool {
 	for _, c := range b {

@@ -63,6 +63,7 @@ export interface Frame {
   channels: FrameChannel[]
   pair: Pair | null
   fps: number
+  averaged?: number // frames in the average, 0 without one
 }
 
 export interface GenState {

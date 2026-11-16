@@ -179,6 +179,7 @@ onMounted(() => {
           <div class="info">
             <span v-if="frame" class="state" :class="runState[1]">{{ runState[0] }}</span>
             <span v-if="frame" class="mono">{{ frame.fps.toFixed(1) }} кадр/с</span>
+            <span v-if="frame?.averaged" class="mono" :title="`Усреднение: в среднем ${frame.averaged} кадров из ${display.avg}`">усредн. {{ frame.averaged }}/{{ display.avg }}</span>
             <span v-if="frame?.sampleRate" class="mono dim">{{ frame.sampleRate }}</span>
           </div>
           <span v-if="saved" class="saved">{{ saved }}</span>

@@ -3,15 +3,16 @@
 // as on the device. Channel ground markers on the left and the trigger level
 // marker on the right can be dragged, and so can the cursors on the screen
 // and the marker of the math channel. The reference waveform lies under the
-// live traces. With stretch the screen fills its box,
+// live traces, and so do the persistence traces. With stretch the screen fills its box,
 // and a division is wider than it is tall. In the X-Y mode the screen is a
 // square of 8 × 8 divisions with CH1 across and CH2 up.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { hasT, hasV, levelAt, sampleAt, snapT, snapV, timeAt, voltsAt } from '../cursors'
 import { eng } from '../format'
 import { mathUnit } from '../math'
+import { Layer, fadeFactor, hexRgb } from '../persist'
 import { refAt, type RefName, type Reference } from '../ref'
-import { cursors, display, mathTrace, reference } from '../state'
+import { cursors, display, mathTrace, persistEpoch, reference } from '../state'
 import type { Frame, FrameChannel } from '../types'
 
 const props = defineProps<{ frame: Frame | null; scope: Record<string, string>; stretch?: boolean }>()
@@ -95,6 +96,7 @@ function draw() {
   g.beginPath()
   g.rect(r.x, r.y, r.w, r.h)
   g.clip()
+  accumulate(r)
   if (display.xy) {
     const ok = drawXY(g, r)
     g.restore()
@@ -103,6 +105,7 @@ function draw() {
     return
   }
   if (display.ref && reference.value) drawRef(g, r, reference.value)
+  paintLayers(g, r)
   for (const name of ['ch2', 'ch1'] as const) {
     const { ch, on } = chInfo(name)
     const raw = ch?.raw
@@ -161,6 +164,7 @@ function mathY(r: ReturnType<typeof plotRect>, v: number) {
 function drawXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
   const a = chInfo('ch1'), b = chInfo('ch2')
   if (display.ref && reference.value && a.ch && b.ch) drawRefXY(g, r, reference.value, a.ch, b.ch)
+  paintLayers(g, r)
   const xs = a.ch?.raw, ys = b.ch?.raw
   if (!a.on || !b.on || !xs || !ys || xs.length < 2 || xs.length !== ys.length) return false
   g.strokeStyle = colors.accent
@@ -172,6 +176,81 @@ function drawXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
   }
   g.stroke()
   return true
+}
+
+// Persistence: a layer per trace, in CSS pixels of the plot, cleared when
+// anything that places the traces on the screen changes.
+let layers = new Map<string, { layer: Layer; canvas: HTMLCanvasElement }>()
+let layerKey = ''
+let lastSeq = -1
+let lastAdd = 0
+let layersDirty = false
+
+function accumulate(r: ReturnType<typeof plotRect>) {
+  const f = props.frame
+  if (display.persist === 'off' || !f) {
+    layers.clear()
+    layerKey = ''
+    return
+  }
+  const key = [
+    Math.round(r.w), Math.round(r.h), display.persist, display.xy, display.math, display.mathScale, display.mathOffset,
+    persistEpoch.value, f.timeDiv, f.hOffset, ...f.channels.map((c) => `${c.on} ${c.voltsPerDiv} ${c.offset}`),
+  ].join('|')
+  if (key !== layerKey) {
+    layers = new Map()
+    layerKey = key
+    lastSeq = -1
+  }
+  if (f.seq === lastSeq) return
+  const now = performance.now()
+  const k = lastSeq < 0 ? 1 : fadeFactor(display.persist, (now - lastAdd) / 1000)
+  lastSeq = f.seq
+  lastAdd = now
+  for (const [name, xs, ys] of layerTraces(r, f)) {
+    let l = layers.get(name)
+    if (!l) {
+      const canvas = document.createElement('canvas')
+      const layer = new Layer(r.w, r.h)
+      ;[canvas.width, canvas.height] = [layer.w, layer.h]
+      layers.set(name, (l = { layer, canvas }))
+    }
+    l.layer.fade(k)
+    l.layer.add(xs, ys)
+  }
+  layersDirty = true
+}
+
+// layerTraces gives the traces of a frame in pixels from the plot corner.
+function layerTraces(r: ReturnType<typeof plotRect>, f: Frame): [string, number[], number[]][] {
+  const ch = (name: string) => f.channels.find((c) => c.name.toLowerCase() === name && c.on && c.raw && c.raw.length > 1)?.raw
+  if (display.xy) {
+    const a = ch('ch1'), b = ch('ch2')
+    if (!a || !b || a.length !== b.length) return []
+    return [['xy', a.map((x) => r.w / 2 + (x / PX) * r.dx), b.map((y) => r.h / 2 - (y / PX) * r.dy)]]
+  }
+  const out: [string, number[], number[]][] = []
+  const xsOf = (n: number) => Array.from({ length: n }, (_, i) => (i * r.w) / (n - 1))
+  for (const name of ['ch1', 'ch2']) {
+    const raw = ch(name)
+    if (raw) out.push([name, xsOf(raw.length), raw.map((y) => r.h / 2 - (y / PX) * r.dy)])
+  }
+  const mt = mathTrace.value
+  if (mt && mt.v.length > 1) out.push(['math', xsOf(mt.v.length), mt.v.map((v) => mathY(r, v) - r.y)])
+  return out
+}
+
+function paintLayers(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
+  for (const [name, { layer, canvas }] of layers) {
+    if (layersDirty) {
+      const cg = canvas.getContext('2d')!
+      const img = cg.createImageData(layer.w, layer.h)
+      layer.render(img, hexRgb(name === 'xy' ? colors.accent : colors[name]))
+      cg.putImageData(img, 0, 0)
+    }
+    g.drawImage(canvas, r.x, r.y, layer.w, layer.h)
+  }
+  layersDirty = false
 }
 
 const refColor = (name: RefName) => colors[name === 'M' ? 'math' : name.toLowerCase()]
@@ -598,7 +677,7 @@ onMounted(() => {
 onBeforeUnmount(() => ro?.disconnect())
 watch(() => [props.frame, { ...props.scope }, props.stretch], schedule, { deep: false })
 watch([cursors, display], schedule, { deep: true })
-watch(reference, schedule)
+watch([reference, persistEpoch], schedule)
 </script>
 
 <template>

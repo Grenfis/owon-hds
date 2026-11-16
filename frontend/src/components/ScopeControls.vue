@@ -3,8 +3,9 @@ import { computed, ref } from 'vue'
 import { TIMEBASES, eng, signed } from '../format'
 import { hasV } from '../cursors'
 import { MATH_OPS, MATH_SCALES, mathUnit, type MathOp } from '../math'
+import { PERSIST_MODES, type PersistMode } from '../persist'
 import { refFromCSV } from '../ref'
-import { cursors, display, fitMathToScreen, frame, mathTrace, reference, resetCursors, saveReference, scope, set, setTrigLevel } from '../state'
+import { cursors, display, fitMathToScreen, frame, mathTrace, persistEpoch, reference, resetCursors, saveReference, scope, set, setTrigLevel } from '../state'
 import ChannelCard from './ChannelCard.vue'
 import ListStepper from './ListStepper.vue'
 import Seg from './Seg.vue'
@@ -42,6 +43,12 @@ const SWEEPS = [
 const COUPLING = [{ value: 'DC', label: 'DC' }, { value: 'AC', label: 'AC' }]
 const MODES = [{ value: 'SAMPle', label: 'Выборка' }, { value: 'PEAK', label: 'Пиковый' }]
 const DEPTHS = [{ value: '4K', label: '4K' }, { value: '8K', label: '8K' }]
+const AVERAGES = [
+  { value: '1', label: 'Выкл', title: 'Каждый кадр как есть' },
+  { value: '4', label: '4', title: 'Среднее примерно четырёх последних кадров' },
+  { value: '16', label: '16', title: 'Среднее примерно шестнадцати последних кадров' },
+  { value: '64', label: '64', title: 'Среднее примерно 64 последних кадров: шума меньше всего, но изменения видны через несколько секунд' },
+]
 const CURSOR_MODES = [
   { value: 'off', label: 'Выкл' },
   { value: 't', label: 'Время', title: 'Две вертикальные линии: интервал, частота и напряжения каналов в этих точках' },
@@ -151,8 +158,15 @@ async function loadCSV(e: Event) {
         <Seg :options="MODES" :model-value="scope['acq.mode']" :disabled="disabled" @update:model-value="set('acq.mode', $event)" />
         <span class="lbl">Память</span>
         <Seg :options="DEPTHS" :model-value="scope['acq.depmem']" :disabled="disabled" @update:model-value="set('acq.depmem', $event)" />
+        <span class="lbl" title="Усреднение кадров: программа складывает кадры и убирает случайный шум">Усреднение</span>
+        <Seg :options="AVERAGES" :model-value="String(display.avg)" @update:model-value="display.avg = +$event" />
         <span class="lbl">Экран</span>
         <Seg :options="SCREENS" :model-value="display.xy ? 'xy' : 'yt'" @update:model-value="display.xy = $event === 'xy'" />
+        <span class="lbl" title="Послесвечение: следы прошлых кадров остаются на экране, яркость показывает, как часто сигнал там бывает">Послесв.</span>
+        <div class="persist">
+          <Seg :options="PERSIST_MODES" :model-value="display.persist" @update:model-value="display.persist = $event as PersistMode" />
+          <button v-if="display.persist !== 'off'" class="ghost zero" title="Стереть следы" @click="persistEpoch++">⟲</button>
+        </div>
       </div>
     </section>
 
@@ -221,6 +235,7 @@ h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); te
 .val.wide { width: 76px; }
 .zero { padding: 2px 6px; font-size: 12px; }
 .mid { font-size: 12px; justify-self: start; }
+.persist { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .head h3 { margin: 0; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; }

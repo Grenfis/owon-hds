@@ -3,6 +3,7 @@ import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import { fitMath, mathOf, type MathOp } from './math'
+import type { PersistMode } from './persist'
 import { isReference, refFromFrame, type Reference } from './ref'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
@@ -28,13 +29,21 @@ export const frame = shallowRef<Frame | null>(null)
 // The math channel and the screen mode, kept between runs. The math channel
 // is computed from every frame.
 const DISPLAY_KEY = 'owon.display'
-export const display = reactive({ math: 'off' as MathOp, mathScale: 1, mathOffset: 0, xy: false, ref: true })
+export const display = reactive({ math: 'off' as MathOp, mathScale: 1, mathOffset: 0, xy: false, ref: true, avg: 1, persist: 'off' as PersistMode })
 try {
   const d = JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}')
   if (d && typeof d === 'object') Object.assign(display, d)
 } catch {}
 watch(display, () => localStorage.setItem(DISPLAY_KEY, JSON.stringify(display)))
 export const mathTrace = computed(() => mathOf(frame.value, display.math))
+
+// The Go side averages the frames; it is told the count at start and on
+// every change.
+const sendAverage = () => call('SetAverage', display.avg).catch((e) => (lastError.value = String(e.message ?? e)))
+watch(() => display.avg, sendAverage)
+
+// Bumped to wipe the persistence traces.
+export const persistEpoch = ref(0)
 
 // fitMathToScreen picks the scale and the offset that show the whole math
 // trace.
@@ -213,6 +222,7 @@ export async function disconnect() {
 }
 
 export function init() {
+  sendAverage()
   on('status', (s: Status) => {
     const was = status.value.connected
     status.value = s

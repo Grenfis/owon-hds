@@ -242,3 +242,40 @@ func TestDistortionSweep(t *testing.T) {
 		t.Logf("%5g V: gain %.3f, distortion %.3f %%, input %.3f %%", p.Amp, *p.Gain, *p.Thd*100, *p.ThdIn*100)
 	}
 }
+
+func TestAverager(t *testing.T) {
+	frame := func(scale string, raw ...float64) *Frame {
+		return &Frame{TimeScale: scale, Channels: []FrameChannel{{Name: "CH1", On: true, VoltsPerDiv: 1, Raw: raw}, {Name: "CH2"}}}
+	}
+	var v averager
+	// Noise of ±2 counts around 10 and −10: the mean of the frames so far.
+	v.apply(frame("1ms", 12, -8), 4)
+	f := frame("1ms", 8, -12)
+	v.apply(f, 4)
+	if first2(f) != [2]float64{10, -10} || f.Averaged != 2 {
+		t.Fatalf("two frames: %v, %d frames", first2(f), f.Averaged)
+	}
+	// Past n frames each new one weighs 1/n.
+	for range 3 {
+		v.apply(frame("1ms", 10, -10), 4)
+	}
+	f = frame("1ms", 14, -10)
+	v.apply(f, 4)
+	if first2(f) != [2]float64{11, -10} || f.Averaged != 4 {
+		t.Fatalf("exponential: %v, %d frames", first2(f), f.Averaged)
+	}
+	// A new time base starts again.
+	f = frame("2ms", 3, 4)
+	v.apply(f, 4)
+	if first2(f) != [2]float64{3, 4} || f.Averaged != 1 {
+		t.Fatalf("after a change: %v, %d frames", first2(f), f.Averaged)
+	}
+	// The measurements follow the average.
+	f.measure()
+	if m := f.Channels[0].Meas; m.Max == nil || *m.Max != 4.0/25 {
+		t.Fatalf("max %v", m.Max)
+	}
+}
+
+// first2 returns the two samples of CH1 in these tests.
+func first2(f *Frame) [2]float64 { return [2]float64{f.Channels[0].Raw[0], f.Channels[0].Raw[1]} }

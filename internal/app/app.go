@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -55,12 +56,18 @@ type App struct {
 	sweepReq  atomic.Pointer[SweepConfig]
 	sweeping  atomic.Bool
 	sweepStop atomic.Bool
+
+	// Frame averaging: the count the user set, and the average itself,
+	// which only the loop touches.
+	avgN atomic.Int32
+	avg  averager
 }
 
 func New(emit Emitter) *App {
 	a := &App{emit: emit, queue: newQueue()}
 	a.view.Store("scope")
 	a.acquire.Store(true)
+	a.avgN.Store(1)
 	return a
 }
 
@@ -176,6 +183,7 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 	// The device screen, read once, so that a view that already matches it
 	// does not switch it again.
 	screen, _ := c.Query(":MODE?")
+	a.avg.reset()
 	for ctx.Err() == nil {
 		if want := viewScreens[a.view.Load().(string)]; want != "" && !strings.EqualFold(want, screen) {
 			cmd := ":MODE " + want
@@ -184,11 +192,15 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 			}
 			a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
 			screen, skip = want, true
+			a.avg.reset()
 		}
 		for _, cmd := range a.queue.take() {
 			if err := c.Send(cmd); err != nil {
 				return err
 			}
+			// Any change of the settings starts the average again, as on a
+			// scope: frames from before it would blur the trace.
+			a.avg.reset()
 			skip = skip || scaleCommand.MatchString(cmd)
 			a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
 		}
@@ -203,6 +215,7 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 				return err
 			}
 			skip = true
+			a.avg.reset()
 			continue
 		}
 		switch a.view.Load() {
@@ -223,6 +236,12 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 			if skip {
 				skip = false
 				continue
+			}
+			if n := int(a.avgN.Load()); n > 1 {
+				a.avg.apply(f, n)
+				f.measure()
+			} else {
+				a.avg.reset()
 			}
 			now := time.Now()
 			if !last.IsZero() {
@@ -278,14 +297,17 @@ type FrameTrig struct {
 }
 
 type FrameChannel struct {
-	Name        string           `json:"name"`
-	On          bool             `json:"on"`
-	Coupling    string           `json:"coupling"`
-	Probe       string           `json:"probe"`
-	VoltsPerDiv float64          `json:"voltsPerDiv"`
-	Offset      int              `json:"offset"` // sample counts from screen centre
-	Raw         []int            `json:"raw"`
-	Meas        hds.Measurements `json:"meas"`
+	Name        string  `json:"name"`
+	On          bool    `json:"on"`
+	Coupling    string  `json:"coupling"`
+	Probe       string  `json:"probe"`
+	VoltsPerDiv float64 `json:"voltsPerDiv"`
+	Offset      int     `json:"offset"` // sample counts from screen centre
+	// Raw holds the screen positions in sample counts, fractional when
+	// frames are averaged.
+	Raw  []float64        `json:"raw"`
+	Meas hds.Measurements `json:"meas"`
+	freq float64          // counted by the device
 }
 
 type Frame struct {
@@ -302,6 +324,8 @@ type Frame struct {
 	// Pair relates CH2 to CH1 when both are on.
 	Pair *hds.Pair `json:"pair"`
 	FPS  float64   `json:"fps"`
+	// Averaged is the number of frames in the average, 0 without one.
+	Averaged int `json:"averaged"`
 }
 
 func (a *App) frame(c *hds.Client) (*Frame, error) {
@@ -339,23 +363,39 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 				c.Resync()
 				return nil, fmt.Errorf("%s: %d байт вместо %d", ch.Name, len(p), want)
 			}
-			ch.Raw = hds.DecodeSamples(p)
-			if n := len(ch.Raw); n > 0 {
-				volts := make([]float64, n)
-				for i, r := range ch.Raw {
-					volts[i] = float64(r-ch.Offset) / hds.DivPixels * ch.VoltsPerDiv
-				}
-				ch.Meas = hds.Measure(volts, ch.Raw, f.TimeDiv*hds.DivsX/float64(n))
+			for _, r := range hds.DecodeSamples(p) {
+				ch.Raw = append(ch.Raw, float64(r))
 			}
-			// The device counts the frequency itself, and more precisely
-			// than a few periods on the screen allow.
-			if fr := float64(hc.Frequence); fr > 0 {
-				period := 1 / fr
-				ch.Meas.Freq, ch.Meas.Period = &fr, &period
-			}
+			ch.freq = float64(hc.Frequence)
 		}
 		f.Channels = append(f.Channels, ch)
 	}
+	f.measure()
+	return f, nil
+}
+
+// measure computes the measurements of each channel and of CH2 against CH1
+// from the samples.
+func (f *Frame) measure() {
+	for i := range f.Channels {
+		ch := &f.Channels[i]
+		ch.Meas = hds.Measurements{}
+		if n := len(ch.Raw); n > 0 {
+			volts, counts := make([]float64, n), make([]int, n)
+			for i, r := range ch.Raw {
+				volts[i] = (r - float64(ch.Offset)) / hds.DivPixels * ch.VoltsPerDiv
+				counts[i] = int(math.Round(r))
+			}
+			ch.Meas = hds.Measure(volts, counts, f.TimeDiv*hds.DivsX/float64(n))
+		}
+		// The device counts the frequency itself, and more precisely than a
+		// few periods on the screen allow.
+		if fr := ch.freq; fr > 0 {
+			period := 1 / fr
+			ch.Meas.Freq, ch.Meas.Period = &fr, &period
+		}
+	}
+	f.Pair = nil
 	if len(f.Channels) == 2 && f.Channels[0].On && f.Channels[1].On && len(f.Channels[0].Raw) > 0 {
 		a, b := f.Channels[0].Meas, f.Channels[1].Meas
 		var period float64
@@ -365,7 +405,6 @@ func (a *App) frame(c *hds.Client) (*Frame, error) {
 		p := hds.Relate(a, b, period, f.TimeDiv*hds.DivsX/float64(len(f.Channels[0].Raw)))
 		f.Pair = &p
 	}
-	return f, nil
 }
 
 // Set queues a setting change. Repeated changes of one setting before the

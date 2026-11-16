@@ -1,0 +1,135 @@
+import { reactive, ref, shallowRef } from 'vue'
+import { call, on } from './api'
+import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
+import type { Frame, GenState, LogEntry, Status } from './types'
+
+export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
+export const frame = shallowRef<Frame | null>(null)
+export const lastError = ref('')
+export const logs = ref<LogEntry[]>([])
+
+// Scope settings as the controls show them. They follow the device through
+// the frame header, except for a setting the user has just changed: that one
+// keeps the user's value for a moment, so the control does not jump back
+// while the device has not applied it yet.
+export const scope = reactive<Record<string, string>>({
+  'ch1.display': 'ON', 'ch1.coupling': 'DC', 'ch1.probe': '1X', 'ch1.scale': '1.00V', 'ch1.offset': '0',
+  'ch2.display': 'ON', 'ch2.coupling': 'DC', 'ch2.probe': '1X', 'ch2.scale': '1.00V', 'ch2.offset': '0',
+  'hor.scale': '1.0ms', 'hor.offset': '0',
+  'trig.source': 'CH1', 'trig.edge': 'RISE', 'trig.sweep': 'AUTO', 'trig.level': '0', 'trig.coupling': 'DC',
+  'acq.mode': 'SAMPle', 'acq.depmem': '4K', run: 'RUN',
+})
+
+// Generator settings live here only: the device does not report them in the
+// frame, so they are read once on connect and then kept by the UI.
+export const gen = reactive({
+  wave: 'SINE', freq: 1000, amp: 1, offset: 0, duty: 50, symmetry: 50, output: false,
+})
+
+const holdUntil = new Map<string, number>()
+
+// set changes a setting on the device. Values are queued in Go and collapse
+// into the last one, so it is fine to call this on every mouse move.
+export function set(key: string, value: string | number, holdMs = 1200) {
+  const v = String(value)
+  if (key in scope) {
+    scope[key] = v
+    holdUntil.set(key, performance.now() + holdMs)
+  }
+  call('Set', key, v).catch((e) => (lastError.value = String(e.message ?? e)))
+}
+
+// setTrigLevel sends the trigger level in millivolts and keeps it in volts
+// in the store, the unit the frame header is parsed into.
+export function setTrigLevel(volts: number) {
+  set('trig.level', `${(volts * 1000).toFixed(1)}mv`)
+  scope['trig.level'] = String(volts)
+}
+
+type GenKey = keyof typeof gen
+
+export function setGen<K extends GenKey>(key: K, value: (typeof gen)[K]) {
+  gen[key] = value
+  const v = typeof value === 'boolean' ? (value ? 'ON' : 'OFF') : String(value)
+  set(`gen.${key}`, v)
+}
+
+function follow(key: string, value: string) {
+  if ((holdUntil.get(key) ?? 0) > performance.now()) return
+  if (scope[key] !== value) scope[key] = value
+}
+
+const SWEEPS: Record<string, string> = { auto: 'AUTO', normal: 'NORMal', norm: 'NORMal', single: 'SINGle', sing: 'SINGle' }
+
+function applyFrame(f: Frame) {
+  for (const ch of f.channels) {
+    const k = ch.name.toLowerCase()
+    if (k !== 'ch1' && k !== 'ch2') continue
+    follow(`${k}.display`, ch.on ? 'ON' : 'OFF')
+    follow(`${k}.coupling`, ch.coupling.toUpperCase())
+    follow(`${k}.probe`, ch.probe.toUpperCase())
+    if (ch.voltsPerDiv > 0) {
+      const opts = vdivOptions(probeFactor(ch.probe))
+      follow(`${k}.scale`, opts[closest(opts, ch.voltsPerDiv)].cmd)
+    }
+    follow(`${k}.offset`, (ch.offset / 25).toFixed(2))
+  }
+  if (f.timeDiv > 0) follow('hor.scale', TIMEBASES[closest(TIMEBASES, f.timeDiv)].cmd)
+  follow('hor.offset', String(f.hOffset))
+  if (f.trig.source) follow('trig.source', f.trig.source.toUpperCase())
+  if (f.trig.edge) follow('trig.edge', f.trig.edge.startsWith('f') ? 'FALL' : 'RISE')
+  if (f.trig.sweep) follow('trig.sweep', SWEEPS[f.trig.sweep] ?? 'AUTO')
+  if (f.trig.coupling) follow('trig.coupling', f.trig.coupling.toUpperCase())
+  if (f.trig.levelStr) follow('trig.level', String(f.trig.level))
+  if (f.acqMode) follow('acq.mode', f.acqMode.startsWith('p') ? 'PEAK' : 'SAMPle')
+  if (f.depMem) follow('acq.depmem', f.depMem.toUpperCase())
+  follow('run', f.run === 'stop' ? 'STOP' : 'RUN')
+}
+
+export async function readGen() {
+  const g = await call<GenState>('ReadGen')
+  if (g.wave) gen.wave = g.wave
+  if (g.freq != null) gen.freq = g.freq
+  if (g.amp != null) gen.amp = g.amp
+  if (g.offset != null) gen.offset = g.offset
+  if (g.duty != null) gen.duty = g.duty
+  if (g.symmetry != null) gen.symmetry = g.symmetry
+  if (g.output != null) gen.output = g.output
+}
+
+export async function connect(mode: 'usb' | 'sim') {
+  lastError.value = ''
+  try {
+    status.value = await call<Status>('Connect', mode)
+    localStorage.setItem('owon.mode', mode)
+    await readGen().catch(() => {})
+  } catch (e: any) {
+    lastError.value = String(e.message ?? e)
+  }
+}
+
+export async function disconnect() {
+  await call('Disconnect')
+  frame.value = null
+}
+
+export function init() {
+  on('status', (s: Status) => {
+    status.value = s
+    if (!s.connected) frame.value = null
+  })
+  on('frame', (f: Frame) => {
+    applyFrame(f)
+    frame.value = f
+  })
+  on('log', (e: LogEntry) => {
+    logs.value.push(e)
+    if (logs.value.length > 500) logs.value.splice(0, logs.value.length - 500)
+  })
+  call<Status>('GetStatus')
+    .then((s) => {
+      status.value = s
+      if (s.connected) return readGen()
+    })
+    .catch(() => {})
+}

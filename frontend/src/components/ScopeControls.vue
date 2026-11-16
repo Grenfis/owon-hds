@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { TIMEBASES, eng } from '../format'
+import { TIMEBASES, eng, signed } from '../format'
 import { hasV } from '../cursors'
-import { cursors, frame, resetCursors, scope, set, setTrigLevel } from '../state'
+import { MATH_OPS, MATH_SCALES, mathUnit, type MathOp } from '../math'
+import { cursors, display, fitMathToScreen, frame, mathTrace, resetCursors, scope, set, setTrigLevel } from '../state'
 import ChannelCard from './ChannelCard.vue'
 import ListStepper from './ListStepper.vue'
 import Seg from './Seg.vue'
@@ -46,12 +47,52 @@ const CURSOR_MODES = [
   { value: 'tv', label: 'Оба', title: 'Обе пары линий' },
 ]
 const CURSOR_SOURCES = [{ value: 'ch1', label: 'CH1' }, { value: 'ch2', label: 'CH2' }]
+const SCREENS = [
+  { value: 'yt', label: 'Y‑T', title: 'Напряжение от времени' },
+  { value: 'xy', label: 'X‑Y', title: 'CH1 по горизонтали, CH2 по вертикали: фигуры Лиссажу, петли' },
+]
+
+const mathOptions = computed(() => MATH_SCALES.map((v) => ({ value: v, cmd: String(v), label: eng(v, mathUnit(display.math), 3, true) })))
+const bothOn = computed(() => scope['ch1.display'] === 'ON' && scope['ch2.display'] === 'ON')
+
+// Turning the math on fits it to the screen once; the scale then stays.
+function setMath(op: string) {
+  const was = display.math
+  display.math = op as MathOp
+  if (was === 'off' && op !== 'off') fitMathToScreen()
+}
 </script>
 
 <template>
   <div class="controls">
     <ChannelCard ch="ch1" :disabled="disabled" />
     <ChannelCard ch="ch2" :disabled="disabled" />
+
+    <section class="math" :class="{ off: display.math === 'off' }">
+      <h3>Математика</h3>
+      <div class="grid">
+        <span class="lbl">Функция</span>
+        <Seg :options="MATH_OPS" :model-value="display.math" @update:model-value="setMath" />
+        <template v-if="display.math !== 'off'">
+          <span class="lbl">Масштаб</span>
+          <ListStepper :options="mathOptions" :model-value="String(display.mathScale)" unit="/дел" @update:model-value="display.mathScale = +$event" />
+          <span class="lbl">Смещение</span>
+          <div class="slider">
+            <input
+              type="range" min="-4" max="4" step="0.04"
+              style="--c: var(--math)"
+              :value="display.mathOffset"
+              @input="display.mathOffset = +($event.target as HTMLInputElement).value"
+            />
+            <span class="mono val">{{ signed(display.mathOffset) }}</span>
+            <button class="ghost zero" :disabled="display.mathOffset === 0" title="На центр" @click="display.mathOffset = 0">0</button>
+          </div>
+          <span />
+          <button v-if="bothOn" class="mid" :disabled="!mathTrace" title="Подобрать масштаб и смещение под сигнал" @click="fitMathToScreen">Подогнать</button>
+          <span v-else class="lbl">Включите оба канала</span>
+        </template>
+      </div>
+    </section>
 
     <section>
       <h3>Развёртка</h3>
@@ -68,6 +109,8 @@ const CURSOR_SOURCES = [{ value: 'ch1', label: 'CH1' }, { value: 'ch2', label: '
         <Seg :options="MODES" :model-value="scope['acq.mode']" :disabled="disabled" @update:model-value="set('acq.mode', $event)" />
         <span class="lbl">Память</span>
         <Seg :options="DEPTHS" :model-value="scope['acq.depmem']" :disabled="disabled" @update:model-value="set('acq.depmem', $event)" />
+        <span class="lbl">Экран</span>
+        <Seg :options="SCREENS" :model-value="display.xy ? 'xy' : 'yt'" @update:model-value="display.xy = $event === 'xy'" />
       </div>
     </section>
 
@@ -125,6 +168,8 @@ section {
   padding: 8px 10px 10px;
   background: var(--panel);
 }
+section.math { border-left: 3px solid var(--math); }
+section.math.off h3 { margin-bottom: 8px; }
 h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .grid { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 7px 8px; }
 .lbl { color: var(--muted); font-size: 12px; }

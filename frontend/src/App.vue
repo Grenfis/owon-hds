@@ -15,7 +15,8 @@ import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
 import StepView from './components/StepView.vue'
 import { stamp } from './format'
-import { connect, disconnect, frame, init, lastError, readGen, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
+import { mathCsvName } from './math'
+import { connect, display, disconnect, frame, init, lastError, mathTrace, readGen, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -82,11 +83,14 @@ async function exportCSV() {
   if (!f) return
   const chans = f.channels.filter((c) => c.on && c.raw?.length)
   const n = Math.max(...chans.map((c) => c.raw!.length))
-  const lines = [`# OWON HDS272S, ${f.timeScale}/div, ${f.sampleRate}; time from trigger point`, ['t_s', ...chans.map((c) => `${c.name}_V`)].join(',')]
+  const mt = mathTrace.value
+  const head = ['t_s', ...chans.map((c) => `${c.name}_V`), ...(mt ? [`M_${mathCsvName(display.math)}`] : [])]
+  const lines = [`# OWON HDS272S, ${f.timeScale}/div, ${f.sampleRate}; time from trigger point`, head.join(',')]
   for (let i = 0; i < n; i++) {
     // A positive offset puts the trigger point hOffset divisions left of centre.
     const t = ((i / (n - 1)) * 12 - 6 + f.hOffset) * f.timeDiv
-    lines.push([t.toPrecision(6), ...chans.map((c) => (((c.raw![i] - c.offset) / 25) * c.voltsPerDiv).toPrecision(5))].join(','))
+    const m = mt ? [mt.v[i].toPrecision(5)] : []
+    lines.push([t.toPrecision(6), ...chans.map((c) => (((c.raw![i] - c.offset) / 25) * c.voltsPerDiv).toPrecision(5)), ...m].join(','))
   }
   await save(`hds272s_${stamp()}.csv`, new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }))
 }

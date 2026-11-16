@@ -1,13 +1,15 @@
 <script setup lang="ts">
 // The oscilloscope screen: 12 × 8 divisions, 25 sample counts per division,
 // as on the device. Channel ground markers on the left and the trigger level
-// marker on the right can be dragged, and so can the cursors on the screen.
-// With stretch the screen fills its box, and a division is wider than it is
-// tall.
+// marker on the right can be dragged, and so can the cursors on the screen
+// and the marker of the math channel. With stretch the screen fills its box,
+// and a division is wider than it is tall. In the X-Y mode the screen is a
+// square of 8 × 8 divisions with CH1 across and CH2 up.
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { hasT, hasV, levelAt, sampleAt, snapT, snapV, timeAt, voltsAt } from '../cursors'
 import { eng } from '../format'
-import { cursors } from '../state'
+import { mathUnit } from '../math'
+import { cursors, display, mathTrace } from '../state'
 import type { Frame } from '../types'
 
 const props = defineProps<{ frame: Frame | null; scope: Record<string, string>; stretch?: boolean }>()
@@ -19,7 +21,7 @@ const M = { l: 28, r: 28, t: 16, b: 8 }
 const box = ref<HTMLDivElement>()
 const canvas = ref<HTMLCanvasElement>()
 const hover = ref<{ x: number; y: number } | null>(null)
-type Drag = { kind: 'ch1' | 'ch2' | 'trig'; div: number } | { kind: 't'; i: 0 | 1 } | { kind: 'v'; i: 0 | 1 }
+type Drag = { kind: 'ch1' | 'ch2' | 'trig' | 'math'; div: number } | { kind: 't'; i: 0 | 1 } | { kind: 'v'; i: 0 | 1 }
 const drag = ref<Drag | null>(null)
 let colors: Record<string, string> = {}
 let size = { w: 0, h: 0, dpr: 1 }
@@ -27,11 +29,12 @@ let raf = 0
 
 function plotRect() {
   const aw = size.w - M.l - M.r, ah = size.h - M.t - M.b
-  let pw = Math.max(10, Math.min(aw, ah * DIVX / DIVY))
-  let ph = pw * DIVY / DIVX
-  if (props.stretch) [pw, ph] = [Math.max(10, aw), Math.max(10, ah)]
+  const nx = display.xy ? DIVY : DIVX
+  let pw = Math.max(10, Math.min(aw, ah * nx / DIVY))
+  let ph = pw * DIVY / nx
+  if (props.stretch && !display.xy) [pw, ph] = [Math.max(10, aw), Math.max(10, ah)]
   const x = M.l + (aw - pw) / 2, y = M.t + (ah - ph) / 2
-  return { x, y, w: pw, h: ph, dx: pw / DIVX, dy: ph / DIVY, cx: x + pw / 2, cy: y + ph / 2 }
+  return { x, y, w: pw, h: ph, nx, dx: pw / nx, dy: ph / DIVY, cx: x + pw / 2, cy: y + ph / 2 }
 }
 
 function chInfo(name: 'ch1' | 'ch2') {
@@ -71,7 +74,7 @@ function draw() {
   g.strokeStyle = '#20252f'
   g.setLineDash([1, 3])
   g.beginPath()
-  for (let i = 1; i < DIVX; i++) if (i !== DIVX / 2) line(g, r.x + i * r.dx, r.y, r.x + i * r.dx, r.y + r.h)
+  for (let i = 1; i < r.nx; i++) if (i !== r.nx / 2) line(g, r.x + i * r.dx, r.y, r.x + i * r.dx, r.y + r.h)
   for (let i = 1; i < DIVY; i++) if (i !== DIVY / 2) line(g, r.x, r.y + i * r.dy, r.x + r.w, r.y + i * r.dy)
   g.stroke()
   g.setLineDash([])
@@ -79,7 +82,7 @@ function draw() {
   g.beginPath()
   line(g, r.cx, r.y, r.cx, r.y + r.h)
   line(g, r.x, r.cy, r.x + r.w, r.cy)
-  for (let i = 0; i <= DIVX * 5; i++) line(g, r.x + i * r.dx / 5, r.cy - 3, r.x + i * r.dx / 5, r.cy + 3)
+  for (let i = 0; i <= r.nx * 5; i++) line(g, r.x + i * r.dx / 5, r.cy - 3, r.x + i * r.dx / 5, r.cy + 3)
   for (let i = 0; i <= DIVY * 5; i++) line(g, r.cx - 3, r.y + i * r.dy / 5, r.cx + 3, r.y + i * r.dy / 5)
   g.stroke()
   g.strokeStyle = '#2b313d'
@@ -90,6 +93,13 @@ function draw() {
   g.beginPath()
   g.rect(r.x, r.y, r.w, r.h)
   g.clip()
+  if (display.xy) {
+    const ok = drawXY(g, r)
+    g.restore()
+    xyLabels(g, r, ok)
+    if (hover.value) drawHoverXY(g, r, hover.value)
+    return
+  }
   for (const name of ['ch2', 'ch1'] as const) {
     const { ch, on } = chInfo(name)
     const raw = ch?.raw
@@ -105,10 +115,21 @@ function draw() {
     }
     g.stroke()
   }
+  const mt = mathTrace.value
+  if (mt && mt.v.length > 1) {
+    g.strokeStyle = colors.math
+    g.beginPath()
+    const k = r.w / (mt.v.length - 1)
+    mt.v.forEach((v, i) => {
+      const x = r.x + i * k, y = mathY(r, v)
+      i ? g.lineTo(x, y) : g.moveTo(x, y)
+    })
+    g.stroke()
+  }
   g.restore()
 
   // Ground markers of the channels, CH1 on top as with the traces.
-  for (const t of groundTags(r).reverse()) marker(g, t.x, t.y, r, 'left', colors[t.name], t.name.slice(2))
+  for (const t of groundTags(r).reverse()) marker(g, t.x, t.y, r, 'left', colors[t.name], t.label)
   // Trigger level and trigger position.
   const td = trigDiv()
   const src = (props.scope['trig.source'] || 'CH1').toLowerCase()
@@ -125,6 +146,67 @@ function draw() {
 
   drawCursors(g, r)
   if (hover.value && !drag.value) drawHover(g, r, hover.value.x)
+}
+
+// mathY places a value of the math channel on the screen.
+function mathY(r: ReturnType<typeof plotRect>, v: number) {
+  return r.cy - (v / display.mathScale + display.mathOffset) * r.dy
+}
+
+// drawXY draws CH2 against CH1, each at its own scale and offset, as the
+// samples follow each other. It needs both channels.
+function drawXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>) {
+  const a = chInfo('ch1'), b = chInfo('ch2')
+  const xs = a.ch?.raw, ys = b.ch?.raw
+  if (!a.on || !b.on || !xs || !ys || xs.length < 2 || xs.length !== ys.length) return false
+  g.strokeStyle = colors.accent
+  g.lineWidth = 1.4
+  g.beginPath()
+  for (let i = 0; i < xs.length; i++) {
+    const x = r.cx + (xs[i] / PX) * r.dx, y = r.cy - (ys[i] / PX) * r.dy
+    i ? g.lineTo(x, y) : g.moveTo(x, y)
+  }
+  g.stroke()
+  return true
+}
+
+function xyLabels(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, ok: boolean) {
+  g.textBaseline = 'middle'
+  if (!ok) {
+    g.font = '13px Segoe UI, sans-serif'
+    g.textAlign = 'center'
+    g.fillStyle = '#8f97a8'
+    g.fillText('Для X‑Y включите оба канала', r.cx, r.cy - 20)
+    return
+  }
+  g.font = '11px Cascadia Mono, Consolas, monospace'
+  g.textAlign = 'right'
+  const rows: [string, string][] = [
+    [`X: CH1 ${eng(chInfo('ch1').vdiv, 'В', 3, true)}/дел`, colors.ch1],
+    [`Y: CH2 ${eng(chInfo('ch2').vdiv, 'В', 3, true)}/дел`, colors.ch2],
+  ]
+  rows.forEach(([t, color], i) => {
+    g.fillStyle = color
+    g.fillText(t, r.x + r.w - 8, r.y + r.h - 12 - (rows.length - 1 - i) * 15)
+  })
+}
+
+// drawHoverXY reads both channels at the mouse.
+function drawHoverXY(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, p: { x: number; y: number }) {
+  if (p.x < r.x || p.x > r.x + r.w || p.y < r.y || p.y > r.y + r.h) return
+  const a = chInfo('ch1').ch, b = chInfo('ch2').ch
+  if (!a || !b) return
+  g.strokeStyle = 'rgba(230,232,237,.35)'
+  g.setLineDash([3, 3])
+  g.beginPath()
+  line(g, p.x, r.y, p.x, r.y + r.h)
+  line(g, r.x, p.y, r.x + r.w, p.y)
+  g.stroke()
+  g.setLineDash([])
+  tooltip(g, r, p.x, [
+    ['CH1', eng(voltsAt(((p.x - r.cx) / r.dx) * PX, a.offset, a.voltsPerDiv), 'В', 4), colors.ch1],
+    ['CH2', eng(voltsAt(((r.cy - p.y) / r.dy) * PX, b.offset, b.voltsPerDiv), 'В', 4), colors.ch2],
+  ])
 }
 
 // drawCursors draws the cursor lines and, in the lower left corner, what
@@ -185,6 +267,11 @@ function drawCursors(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>
       const [va, vb] = cursors.t.map((x) => voltsAt(sampleAt(ch.raw!, x), ch.offset, ch.voltsPerDiv))
       rows.push({ label: name.toUpperCase(), color: colors[name], text: pair(va, vb, 'В') })
     }
+    const mt = mathTrace.value
+    if (mt) {
+      const [ma, mb] = cursors.t.map((x) => sampleAt(mt.v, x))
+      rows.push({ label: 'M', color: colors.math, text: pair(ma, mb, mathUnit(display.math)) })
+    }
   }
   if (hasV(mode)) {
     const { ch } = chInfo(src)
@@ -244,13 +331,25 @@ function line(g: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y
 // groundTags places the channel ground markers. When both sit at the same
 // height, the CH2 tag moves left so that both stay visible and grabbable.
 function groundTags(r: ReturnType<typeof plotRect>) {
-  const tags: { name: 'ch1' | 'ch2'; x: number; y: number }[] = []
+  const tags: { name: 'ch1' | 'ch2' | 'math'; label: string; x: number; y: number }[] = []
   for (const name of ['ch1', 'ch2'] as const) {
     const { on, offsetDiv } = chInfo(name)
-    if (on) tags.push({ name, x: r.x - 4, y: r.cy - offsetDiv * r.dy })
+    if (on) tags.push({ name, label: name.slice(2), x: r.x - 4, y: r.cy - offsetDiv * r.dy })
   }
+  if (mathTrace.value) tags.push({ name: 'math', label: 'M', x: r.x - 4, y: r.cy - display.mathOffset * r.dy })
+  // A tag at the height of one before it moves left while there is room.
   const clamp = (y: number) => Math.max(r.y, Math.min(r.y + r.h, y))
-  if (tags.length === 2 && Math.abs(clamp(tags[0].y) - clamp(tags[1].y)) < 16 && r.x >= 50) tags[1].x -= 24
+  for (let i = 1; i < tags.length; i++) {
+    for (let moved = true; moved; ) {
+      moved = false
+      for (let j = 0; j < i; j++) {
+        if (tags[j].x === tags[i].x && Math.abs(clamp(tags[i].y) - clamp(tags[j].y)) < 16 && tags[i].x >= 46) {
+          tags[i].x -= 24
+          moved = true
+        }
+      }
+    }
+  }
   return tags
 }
 
@@ -296,19 +395,32 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
   if (!f) return
   const xdiv = (mx - r.x) / r.dx
   const hoff = parseFloat(props.scope['hor.offset']) || 0
-  const rows: [string, string][] = [['t', eng((xdiv - DIVX / 2 + hoff) * f.timeDiv, 'с', 4)]]
+  const rows: [string, string, string][] = [['t', eng((xdiv - DIVX / 2 + hoff) * f.timeDiv, 'с', 4), '#8f97a8']]
+  const dot = (y: number, color: string) => {
+    g.fillStyle = color
+    g.beginPath()
+    g.arc(mx, y, 3, 0, Math.PI * 2)
+    g.fill()
+  }
   for (const name of ['ch1', 'ch2'] as const) {
     const { ch, on } = chInfo(name)
     if (!on || !ch?.raw?.length) continue
     const i = Math.round((xdiv / DIVX) * (ch.raw.length - 1))
     const v = ((ch.raw[i] - ch.offset) / PX) * ch.voltsPerDiv
-    rows.push([name.toUpperCase(), eng(v, 'В', 4)])
-    const y = r.cy - (ch.raw[i] / PX) * r.dy
-    g.fillStyle = colors[name]
-    g.beginPath()
-    g.arc(mx, y, 3, 0, Math.PI * 2)
-    g.fill()
+    rows.push([name.toUpperCase(), eng(v, 'В', 4), colors[name]])
+    dot(r.cy - (ch.raw[i] / PX) * r.dy, colors[name])
   }
+  const mt = mathTrace.value
+  if (mt) {
+    const i = Math.round((xdiv / DIVX) * (mt.v.length - 1))
+    rows.push(['M', eng(mt.v[i], mathUnit(display.math), 4), colors.math])
+    dot(mathY(r, mt.v[i]), colors.math)
+  }
+  tooltip(g, r, mx, rows)
+}
+
+// tooltip draws the readout box next to the mouse at the top of the screen.
+function tooltip(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, mx: number, rows: [string, string, string][]) {
   g.font = '12px Cascadia Mono, Consolas, monospace'
   const w = 150, h = rows.length * 17 + 8
   const bx = mx + 12 + w > r.x + r.w ? mx - 12 - w : mx + 12
@@ -320,10 +432,10 @@ function drawHover(g: CanvasRenderingContext2D, r: ReturnType<typeof plotRect>, 
   g.fill()
   g.stroke()
   g.textBaseline = 'middle'
-  rows.forEach(([k, v], i) => {
+  rows.forEach(([k, v, color], i) => {
     const y = by + 13 + i * 17
     g.textAlign = 'left'
-    g.fillStyle = colors[k.toLowerCase()] ?? '#8f97a8'
+    g.fillStyle = color
     g.fillText(k, bx + 9, y)
     g.textAlign = 'right'
     g.fillStyle = '#e6e8ed'
@@ -341,11 +453,12 @@ function snap(div: number) {
 }
 
 function down(e: MouseEvent) {
+  if (display.xy) return
   const p = pos(e), r = plotRect()
   const near = (y: number) => Math.abs(p.y - Math.max(r.y, Math.min(r.y + r.h, y))) < 10
   if (p.x < r.x) {
     const tag = groundTags(r).find((t) => near(t.y) && p.x >= t.x - 24 && p.x <= t.x + 2)
-    if (tag) drag.value = { kind: tag.name, div: chInfo(tag.name).offsetDiv }
+    if (tag) drag.value = tag.name === 'math' ? { kind: 'math', div: display.mathOffset } : { kind: tag.name, div: chInfo(tag.name).offsetDiv }
   } else if (p.x > r.x + r.w) {
     const td = trigDiv()
     if (td != null && near(r.cy - td * r.dy)) drag.value = { kind: 'trig', div: td }
@@ -371,7 +484,9 @@ function dragMove(e: MouseEvent) {
   const div = snap((r.cy - pos(e).y) / r.dy)
   if (div === d.div) return
   drag.value = { ...d, div }
-  if (d.kind === 'trig') {
+  if (d.kind === 'math') {
+    display.mathOffset = div
+  } else if (d.kind === 'trig') {
     const src = (props.scope['trig.source'] || 'CH1').toLowerCase() as 'ch1' | 'ch2'
     const { vdiv, offsetDiv } = chInfo(src)
     emit('level', (div - offsetDiv) * vdiv)
@@ -392,7 +507,7 @@ function move(e: MouseEvent) {
   const p = hover.value, r = plotRect()
   const c = canvas.value!
   const hit = drag.value ?? cursorAt(p, r)
-  c.style.cursor = p.x < r.x || p.x > r.x + r.w || hit?.kind === 'v' ? 'ns-resize' : hit?.kind === 't' ? 'ew-resize' : 'crosshair'
+  c.style.cursor = display.xy ? 'crosshair' : p.x < r.x || p.x > r.x + r.w || hit?.kind === 'v' ? 'ns-resize' : hit?.kind === 't' ? 'ew-resize' : 'crosshair'
   schedule()
 }
 
@@ -404,7 +519,12 @@ defineExpose({ toPNG })
 let ro: ResizeObserver | undefined
 onMounted(() => {
   const cs = getComputedStyle(document.documentElement)
-  colors = { ch1: cs.getPropertyValue('--ch1').trim(), ch2: cs.getPropertyValue('--ch2').trim(), accent: cs.getPropertyValue('--accent').trim() }
+  colors = {
+    ch1: cs.getPropertyValue('--ch1').trim(),
+    ch2: cs.getPropertyValue('--ch2').trim(),
+    math: cs.getPropertyValue('--math').trim(),
+    accent: cs.getPropertyValue('--accent').trim(),
+  }
   ro = new ResizeObserver(() => {
     const b = box.value!.getBoundingClientRect()
     size = { w: b.width, h: b.height, dpr: window.devicePixelRatio || 1 }
@@ -416,7 +536,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => ro?.disconnect())
 watch(() => [props.frame, { ...props.scope }, props.stretch], schedule, { deep: false })
-watch(cursors, schedule, { deep: true })
+watch([cursors, display], schedule, { deep: true })
 </script>
 
 <template>

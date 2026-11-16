@@ -3,6 +3,8 @@
 // chosen in a menu and kept between runs.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { eng } from '../format'
+import { mathName, mathStats, mathUnit } from '../math'
+import { display, mathTrace } from '../state'
 import type { Frame, FrameChannel, Measurements, Pair } from '../types'
 
 const props = defineProps<{ frame: Frame | null }>()
@@ -121,6 +123,24 @@ const rows = computed(() => {
     }))
 })
 
+// The math channel is measured here over the whole screen, with a fixed set.
+const mathItems = computed(() => {
+  const m = mathTrace.value
+  if (!m) return null
+  const s = mathStats(m.v), u = mathUnit(display.math)
+  return {
+    name: mathName(display.math),
+    clipped: m.clipped,
+    items: [
+      { id: 'pp', label: 'Размах', value: eng(s.pp, u, 3) },
+      { id: 'max', label: 'Максимум', value: eng(s.max, u, 3) },
+      { id: 'min', label: 'Минимум', value: eng(s.min, u, 3) },
+      { id: 'avg', label: 'Среднее', value: eng(s.avg, u, 3) },
+      { id: 'rms', label: 'СКЗ', value: eng(s.rms, u, 3) },
+    ],
+  }
+})
+
 const pairItems = computed(() => {
   const p = props.frame?.pair
   if (!p) return []
@@ -166,6 +186,17 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
       <span class="end">
         <span v-if="r.clipped" class="clip" title="Часть сигнала за краем экрана: размах и амплитуда занижены. Увеличьте В/дел.">за экраном</span>
         <button v-if="i === 0" class="ghost cfg" :class="{ on: open }" title="Выбрать, какие измерения показывать" @click="toggleMenu">⚙</button>
+      </span>
+    </div>
+    <div v-if="mathItems" class="row math">
+      <span class="tag" :title="`Математика: ${mathItems.name}, по всему экрану`">M</span>
+      <span class="mono fn">{{ mathItems.name }}</span>
+      <div v-for="it in mathItems.items" :key="it.id" class="item">
+        <span class="k">{{ it.label }}</span>
+        <span class="v mono">{{ it.value }}</span>
+      </div>
+      <span class="end">
+        <span v-if="mathItems.clipped" class="clip" title="Канал за краем экрана: и результат неверен. Увеличьте В/дел.">за экраном</span>
       </span>
     </div>
     <div v-if="pairItems.length" class="row pair">
@@ -221,6 +252,8 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
 .row.ch1 { --c: var(--ch1); }
 .row.ch2 { --c: var(--ch2); }
 .row.pair { --c: var(--accent); }
+.row.math { --c: var(--math); }
+.fn { font-size: 12px; color: var(--muted); min-width: 74px; }
 .tag { font-weight: 600; color: var(--c); width: 30px; white-space: nowrap; }
 .item { display: flex; flex-direction: column; min-width: 74px; }
 .k { font-size: 11px; color: var(--muted); white-space: nowrap; }

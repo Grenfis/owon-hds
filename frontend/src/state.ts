@@ -2,6 +2,7 @@ import { computed, reactive, ref, shallowRef, watch } from 'vue'
 import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
+import { fitMath, mathOf, type MathOp } from './math'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
 // Screen cursors, kept between runs.
@@ -22,6 +23,26 @@ export function resetCursors() {
 
 export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
 export const frame = shallowRef<Frame | null>(null)
+
+// The math channel and the screen mode, kept between runs. The math channel
+// is computed from every frame.
+const DISPLAY_KEY = 'owon.display'
+export const display = reactive({ math: 'off' as MathOp, mathScale: 1, mathOffset: 0, xy: false })
+try {
+  const d = JSON.parse(localStorage.getItem(DISPLAY_KEY) ?? '{}')
+  if (d && typeof d === 'object') Object.assign(display, d)
+} catch {}
+watch(display, () => localStorage.setItem(DISPLAY_KEY, JSON.stringify(display)))
+export const mathTrace = computed(() => mathOf(frame.value, display.math))
+
+// fitMathToScreen picks the scale and the offset that show the whole math
+// trace.
+export function fitMathToScreen() {
+  const m = mathTrace.value
+  if (!m) return
+  const { scale, offset } = fitMath(m.v)
+  Object.assign(display, { mathScale: scale, mathOffset: offset })
+}
 export const lastError = ref('')
 export const logs = ref<LogEntry[]>([])
 

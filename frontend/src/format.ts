@@ -9,7 +9,8 @@ const PREFIXES: [number, string][] = [
 // drops trailing zeros ("1 мс" instead of "1.00 мс").
 export function eng(v: number | null | undefined, unit: string, sig = 4, trim = false): string {
   if (v == null || !Number.isFinite(v)) return '—'
-  if (v === 0) return `0 ${unit}`
+  // Below the smallest prefix there is only rounding noise of a computed zero.
+  if (Math.abs(v) < 1e-15) return `0 ${unit}`
   const a = Math.abs(v)
   let [mult, prefix] = PREFIXES[PREFIXES.length - 1]
   for (const [m, p] of PREFIXES) {

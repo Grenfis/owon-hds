@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"owon-hds/internal/hds"
 )
 
 func TestCommand(t *testing.T) {
@@ -284,6 +286,70 @@ func TestWaveKeepsOutput(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if s := query(":CHANnel?"); s != "ON" {
 		t.Errorf("output %s after a waveform, was on", s)
+	}
+}
+
+// Without a device the search goes on, says why, and ends on Disconnect or
+// on a connection of another kind.
+func TestAutoConnect(t *testing.T) {
+	a := New(func(string, any) {})
+	st := a.AutoConnect()
+	if !st.Searching || st.Connected {
+		t.Fatalf("status %+v, want searching", st)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for a.GetStatus().Error == "" {
+		if time.Now().After(deadline) {
+			t.Fatal("no error from the first attempt")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st := a.AutoConnect(); !st.Searching {
+		t.Errorf("a second call changed the status to %+v", st)
+	}
+	if st, err := a.Connect("sim"); err != nil || !st.Connected {
+		t.Fatalf("simulator during the search: %+v %v", st, err)
+	}
+	a.AutoConnect()
+	time.Sleep(100 * time.Millisecond)
+	if st := a.GetStatus(); !st.Connected || st.Mode != "sim" {
+		t.Errorf("the search replaced a connection: %+v", st)
+	}
+	a.Disconnect()
+	a.AutoConnect()
+	a.Disconnect()
+	if st := a.GetStatus(); st.Searching || st.Connected {
+		t.Errorf("status %+v after Disconnect", st)
+	}
+}
+
+// leftover is a device that still holds the rest of a reply to a program
+// that was closed in the middle of it.
+type leftover struct{ out [][]byte }
+
+func (d *leftover) Write(p []byte) (int, error) {
+	if strings.HasPrefix(string(p), "*IDN?") {
+		d.out = append(d.out, []byte("OWON,HDS272S,1,V8.8.2->"))
+	}
+	return len(p), nil
+}
+
+func (d *leftover) Read(p []byte, timeout time.Duration) (int, error) {
+	if len(d.out) == 0 {
+		return 0, hds.ErrTimeout
+	}
+	n := copy(p, d.out[0])
+	d.out = d.out[1:]
+	return n, nil
+}
+
+func (d *leftover) Close() error { return nil }
+
+func TestIdentifyAfterLeftover(t *testing.T) {
+	d := &leftover{out: [][]byte{[]byte(`MODEL":"HDS272S_1","Trig":{"Mode":"SINGle"}}`)}}
+	idn, err := identify(hds.New(d))
+	if err != nil || idn != "OWON,HDS272S,1,V8.8.2" {
+		t.Errorf("identify = %q, %v", idn, err)
 	}
 }
 

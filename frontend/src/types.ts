@@ -7,6 +7,7 @@ export interface Status {
   detail: string
   error: string
   reconnecting: boolean
+  searching: boolean
 }
 
 export interface Measurements {

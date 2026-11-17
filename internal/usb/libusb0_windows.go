@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -195,10 +196,23 @@ func cptr(addr uintptr) unsafe.Pointer {
 	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
 }
 
+const cpACP = 0 // CP_ACP, the ANSI code page of the system
+
+// lastError is libusb's last error. It ends with the Windows message, in
+// the ANSI code page, cp1251 on a Russian Windows, so it is decoded from it.
 func lastError() string {
 	p, _, _ := procStrerror.Call()
 	if p == 0 {
 		return "неизвестная ошибка"
 	}
-	return windows.BytePtrToString((*byte)(cptr(p)))
+	b := []byte(windows.BytePtrToString((*byte)(cptr(p))))
+	if len(b) == 0 {
+		return ""
+	}
+	w := make([]uint16, len(b))
+	n, err := windows.MultiByteToWideChar(cpACP, 0, &b[0], int32(len(b)), &w[0], int32(len(w)))
+	if err != nil {
+		return string(b)
+	}
+	return strings.TrimSpace(windows.UTF16ToString(w[:n]))
 }

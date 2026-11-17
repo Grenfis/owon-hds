@@ -28,7 +28,11 @@ export function resetCursors() {
   Object.assign(cursors, { t, v })
 }
 
-export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false })
+export const status = ref<Status>({ connected: false, mode: '', idn: '', detail: '', error: '', reconnecting: false, searching: false })
+
+// Whether the program looks for the device at start, kept between runs.
+export const autoConnect = ref(localStorage.getItem('owon.autoConnect') !== '0')
+watch(autoConnect, (v) => localStorage.setItem('owon.autoConnect', v ? '1' : '0'))
 export const frame = shallowRef<Frame | null>(null)
 
 // The math channel and the screen mode, kept between runs. The math channel
@@ -420,10 +424,13 @@ export function init() {
     logs.value.push(e)
     if (logs.value.length > 500) logs.value.splice(0, logs.value.length - 500)
   })
+  // At start the device is looked for in the background until it answers.
+  // A reloaded page finds the connection or the search already on.
   call<Status>('GetStatus')
-    .then((s) => {
+    .then(async (s) => {
       status.value = s
       if (s.connected) return readGen()
+      if (!s.reconnecting && !s.searching && autoConnect.value) status.value = await call<Status>('AutoConnect')
     })
     .catch(() => {})
 }

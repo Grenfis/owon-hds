@@ -33,6 +33,7 @@ type Status struct {
 	Detail       string `json:"detail"`
 	Error        string `json:"error"`
 	Reconnecting bool   `json:"reconnecting"`
+	Searching    bool   `json:"searching"` // waiting for the device to answer, see AutoConnect
 }
 
 type App struct {
@@ -99,6 +100,29 @@ func (a *App) Connect(mode string) (Status, error) {
 	return st, nil
 }
 
+// AutoConnect looks for the device over USB in the background: now, and
+// then every 2 s until it answers, or until Disconnect or Connect end the
+// search. The UI calls it at start. It does nothing while a connection or
+// a search is on.
+func (a *App) AutoConnect() Status {
+	a.mu.Lock()
+	if a.cancel != nil {
+		defer a.mu.Unlock()
+		return a.status
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel, a.done = cancel, make(chan struct{})
+	done := a.done
+	a.mu.Unlock()
+	a.queue.take()
+	a.setStatus(Status{Mode: "usb", Searching: true})
+	go func() {
+		defer close(done)
+		a.supervise(ctx, "usb", nil, Status{})
+	}()
+	return a.GetStatus()
+}
+
 func (a *App) Disconnect() {
 	a.mu.Lock()
 	cancel, done := a.cancel, a.done
@@ -137,19 +161,51 @@ func open(mode string) (*hds.Client, Status, error) {
 		return nil, st, fmt.Errorf("неизвестный режим %q", mode)
 	}
 	c := hds.New(t)
-	idn, err := c.Query("*IDN?")
+	idn, err := identify(c)
 	if err != nil {
 		c.Close()
-		return nil, st, fmt.Errorf("прибор не ответил на *IDN?: %w", err)
+		return nil, st, err
 	}
 	st.Connected, st.IDN = true, idn
 	return c, st, nil
 }
 
+// identify asks the device who it is. A program closed in the middle of a
+// reply leaves the rest of it in the device, so whatever the device still
+// sends is read away first, and a reply that is not an identity is taken
+// for such a rest.
+func identify(c *hds.Client) (string, error) {
+	var last string
+	for try := 0; try < 3; try++ {
+		c.Resync()
+		idn, err := c.Query("*IDN?")
+		if err != nil {
+			return "", fmt.Errorf("прибор не ответил на *IDN?: %w", err)
+		}
+		if strings.HasPrefix(idn, "OWON") {
+			return idn, nil
+		}
+		last = idn
+	}
+	return "", fmt.Errorf("на *IDN? пришёл чужой ответ: %.60q", last)
+}
+
 // supervise runs the loop and reconnects after the device drops out, for
-// example when the cable is pulled or the device goes to sleep.
+// example when the cable is pulled or the device goes to sleep. Without a
+// client it first waits for the device to answer.
 func (a *App) supervise(ctx context.Context, mode string, c *hds.Client, st Status) {
+	wait, prefix := Status{Mode: mode, Searching: true}, ""
 	for {
+		for c == nil {
+			var err error
+			if c, st, err = open(mode); err != nil {
+				wait.Error = prefix + err.Error()
+				a.setStatus(wait)
+				if !sleep(ctx, 2*time.Second) {
+					return
+				}
+			}
+		}
 		a.mu.Lock()
 		a.client = c
 		a.mu.Unlock()
@@ -159,19 +215,14 @@ func (a *App) supervise(ctx context.Context, mode string, c *hds.Client, st Stat
 		a.client = nil
 		a.mu.Unlock()
 		c.Close()
+		c = nil
 		if ctx.Err() != nil {
 			return
 		}
-		lost := Status{Mode: mode, Error: "связь потеряна: " + err.Error(), Reconnecting: true}
-		for {
-			a.setStatus(lost)
-			if !sleep(ctx, 2*time.Second) {
-				return
-			}
-			if c, st, err = open(mode); err == nil {
-				break
-			}
-			lost.Error = "переподключение: " + err.Error()
+		wait, prefix = Status{Mode: mode, Error: "связь потеряна: " + err.Error(), Reconnecting: true}, "переподключение: "
+		a.setStatus(wait)
+		if !sleep(ctx, 2*time.Second) {
+			return
 		}
 	}
 }

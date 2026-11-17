@@ -19,7 +19,7 @@ import StepView from './components/StepView.vue'
 import { frameCSV } from './export'
 import { stamp } from './format'
 import { scopeOf } from './record'
-import { connect, display, disconnect, frame, init, lastError, mathTrace, readGen, rec, recFrames, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
+import { autoConnect, connect, display, disconnect, frame, init, lastError, mathTrace, readGen, rec, recFrames, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -150,6 +150,11 @@ onMounted(() => {
           <span class="chip warn" :title="status.error"><span class="dot" />Переподключение…</span>
           <button class="ghost" @click="disconnect">Отмена</button>
         </template>
+        <template v-else-if="status.searching">
+          <span class="chip warn" :title="status.error || 'Программа подключится, как только прибор ответит'"><span class="dot" />Поиск прибора…</span>
+          <button class="ghost" title="Перестать искать прибор" @click="disconnect">Отмена</button>
+          <button :disabled="!!connecting" title="Работа без прибора: CH1 — генератор, CH2 — RC-фильтр 10 кГц" @click="doConnect('sim')">Имитатор</button>
+        </template>
         <template v-else>
           <button class="primary" :disabled="!!connecting" @click="doConnect('usb')">{{ connecting === 'usb' ? 'Подключаю…' : 'Подключить по USB' }}</button>
           <button :disabled="!!connecting" title="Работа без прибора: CH1 — генератор, CH2 — RC-фильтр 10 кГц" @click="doConnect('sim')">Имитатор</button>
@@ -201,14 +206,16 @@ onMounted(() => {
         <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="shownScope" :stretch="!!panel" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online && !rec.viewing" class="overlay">
             <div class="card">
-              <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
-              <p v-if="status.error || lastError" class="err-text">{{ status.error || lastError }}</p>
+              <h2>{{ status.reconnecting ? 'Связь потеряна' : status.searching ? 'Ищу прибор' : 'Нет связи с прибором' }}</h2>
+              <p v-if="status.error || lastError" :class="status.searching ? 'note' : 'err-text'">{{ status.error || lastError }}</p>
               <ol>
                 <li>Включите прибор. В меню <b>System → F4 → USB</b> выберите <b>HID</b>.</li>
                 <li>Подключите кабель USB.</li>
-                <li>Нажмите <b>«Подключить по USB»</b> вверху справа.</li>
+                <li v-if="status.searching || status.reconnecting">Программа подключится сама, как только прибор ответит. Она пробует каждые 2 секунды.</li>
+                <li v-else>Нажмите <b>«Подключить по USB»</b> вверху справа.</li>
               </ol>
               <p class="muted">Без прибора можно запустить имитатор: в нём CH1 показывает генератор, а CH2 — тот же сигнал после RC-фильтра.</p>
+              <label class="auto muted" title="При запуске программа сама ищет прибор по USB, пока он не ответит"><input v-model="autoConnect" type="checkbox" /> Искать прибор при запуске программы</label>
             </div>
           </div>
         </ScopeCanvas>
@@ -307,6 +314,7 @@ nav { display: flex; gap: 2px; flex: 1 0 auto; }
 .state.ok { color: var(--ok); }
 .state.warn { color: var(--warn); }
 .state.rec { color: var(--err); }
+.overlay .auto { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; margin-top: 4px; }
 .saved { font-size: 12px; color: var(--ok); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas { flex: 1; }
 .spectrum { flex: 1; }
@@ -325,5 +333,6 @@ aside { overflow-y: auto; min-height: 0; padding-right: 2px; }
 .overlay h2 { margin: 0 0 8px; font-size: 16px; }
 .overlay ol { padding-left: 20px; margin: 8px 0; }
 .err-text { color: var(--err); margin: 0 0 6px; font-size: 12px; }
+.overlay .note { color: var(--muted); margin: 0 0 6px; font-size: 12px; }
 .page { flex: 1; min-height: 0; }
 </style>

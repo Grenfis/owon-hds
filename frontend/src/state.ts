@@ -5,6 +5,7 @@ import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import { sweepAt, type GenSweep } from './gensweep'
 import { fitMath, mathOf, type MathOp } from './math'
 import type { PersistMode } from './persist'
+import { DISPLAY_KEYS, changes, parsePresets, snapshot, type Preset } from './presets'
 import { MAX_FRAMES, type RecFrame } from './record'
 import { isReference, refFromFrame, type Reference } from './ref'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
@@ -221,6 +222,48 @@ export const sweep = newSweep()
 export const distortion = newSweep()
 const sweepOf = (mode?: string) => (mode === 'amp' ? distortion : sweep)
 export const sweeping = computed(() => sweep.state === 'running' || distortion.state === 'running')
+
+// Presets, kept between runs.
+const PRESETS_KEY = 'owon.presets'
+const stored = parsePresets(localStorage.getItem(PRESETS_KEY) ?? '[]')
+export const presets = ref<Preset[]>(typeof stored === 'string' ? [] : stored)
+watch(presets, (p) => localStorage.setItem(PRESETS_KEY, JSON.stringify(p)), { deep: true })
+
+// savePreset keeps the settings there are now under a name; a preset of
+// the same name is replaced.
+export function savePreset(name: string, withGen: boolean) {
+  const p = snapshot(name, scope, withGen ? gen : null, display)
+  const i = presets.value.findIndex((q) => q.name === name)
+  if (i >= 0) presets.value[i] = p
+  else presets.value.push(p)
+}
+
+// applyPreset sends the settings of a preset that differ from the current
+// ones. A scale takes the device about a second, so the controls keep the
+// preset's values longer than after a single change. The generator gets all
+// its values, since it may have been changed on the device itself; the
+// pulse width and the ramp symmetry only with their waves.
+export function applyPreset(p: Preset) {
+  for (const [k, v] of changes(p, scope)) {
+    if (k === 'trig.level') setTrigLevel(+v)
+    else set(k, v, 4000)
+  }
+  const g = p.gen
+  if (g) {
+    stopGenSweep(false)
+    const wave = String(g.wave ?? gen.wave).toUpperCase()
+    setGen('wave', wave)
+    for (const k of ['freq', 'amp', 'offset'] as const) if (typeof g[k] === 'number') setGen(k, g[k])
+    if (wave.startsWith('PULS') && typeof g.duty === 'number') setGen('duty', g.duty)
+    if (wave.startsWith('RAMP') && typeof g.symmetry === 'number') setGen('symmetry', g.symmetry)
+  }
+  const d: Record<string, unknown> = {}
+  for (const k of DISPLAY_KEYS) {
+    const v = p.display[k]
+    if (v != null && typeof v === typeof (display as Record<string, unknown>)[k]) d[k] = v
+  }
+  Object.assign(display, d)
+}
 
 // The software sweep of the generator frequency. Its settings are kept
 // between runs; a step goes out every 100 ms, about as often as the loop

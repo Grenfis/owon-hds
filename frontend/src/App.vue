@@ -10,6 +10,7 @@ import GenPanel from './components/GenPanel.vue'
 import HelpView from './components/HelpView.vue'
 import ImpedanceView from './components/ImpedanceView.vue'
 import MeasureStrip from './components/MeasureStrip.vue'
+import PresetMenu from './components/PresetMenu.vue'
 import RecordView from './components/RecordView.vue'
 import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
@@ -176,6 +177,7 @@ onMounted(() => {
           <button :class="{ primary: impShown }" title="Импеданс детали через эталонный резистор: C, L, R, ESR" @click="impShown = !impShown">Импеданс</button>
           <button :class="{ primary: curveShown }" title="Тестер компонентов: вольт-амперная характеристика детали через эталонный резистор" @click="curveShown = !curveShown">ВАХ</button>
           <button :class="{ primary: recShown }" title="Запись и просмотр кадров, ловушка редких событий" @click="recShown = !recShown">Запись</button>
+          <PresetMenu :online="controls" @save="save" />
           <div class="info">
             <span v-if="rec.viewing" class="state warn" title="На экране записанный кадр, а не живой сигнал">Запись {{ rec.index + 1 }}/{{ recFrames.length }}</span>
             <span v-if="rec.recording" class="state rec">● запись {{ recFrames.length }}</span>

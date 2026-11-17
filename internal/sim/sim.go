@@ -362,8 +362,10 @@ func (d *Device) set(path, arg string) {
 			d.busy = 1700 * time.Millisecond
 		}
 	case "FUNC":
+		// Like the device, choosing a waveform turns the output on.
 		if w, ok := waves[up]; ok {
 			d.gen.wave = w
+			d.gen.on = true
 		}
 	case "FUNC:FREQ":
 		if v, ok := num(0.1, 25e6); ok {

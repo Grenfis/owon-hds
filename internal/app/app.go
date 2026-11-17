@@ -198,8 +198,23 @@ func (a *App) loop(ctx context.Context, c *hds.Client) error {
 			a.avg.reset()
 		}
 		for _, cmd := range a.queue.take() {
+			// Choosing a waveform turns the generator output on, as the wave
+			// keys of the device do. A waveform alone must not, so an output
+			// that was off goes off again right after it.
+			wasOff := false
+			if strings.HasPrefix(cmd, ":FUNCtion ") {
+				s, err := c.Query(":CHANnel?")
+				wasOff = err == nil && strings.EqualFold(strings.TrimSpace(s), "OFF")
+			}
 			if err := c.Send(cmd); err != nil {
 				return err
+			}
+			if wasOff {
+				a.emit("log", LogEntry{Dir: "out", Text: cmd, Time: time.Now().UnixMilli()})
+				cmd = ":CHANnel OFF"
+				if err := c.Send(cmd); err != nil {
+					return err
+				}
 			}
 			// Any change of the settings starts the average again, as on a
 			// scope: frames from before it would blur the trace.

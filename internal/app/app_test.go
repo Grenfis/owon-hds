@@ -244,6 +244,49 @@ func TestDistortionSweep(t *testing.T) {
 	}
 }
 
+// The device turns the generator output on when a waveform is chosen; the
+// program keeps it as it was.
+func TestWaveKeepsOutput(t *testing.T) {
+	a := New(func(string, any) {})
+	if _, err := a.Connect("sim"); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Disconnect()
+	query := func(q string) string {
+		t.Helper()
+		r, err := a.Console(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Reply
+	}
+	set := func(key, value, q, want string) {
+		t.Helper()
+		if err := a.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for !strings.EqualFold(query(q), want) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not become %s", q, want)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	set("gen.output", "OFF", ":CHANnel?", "OFF")
+	set("gen.wave", "SQUare", ":FUNCtion?", "SQUARE")
+	time.Sleep(200 * time.Millisecond)
+	if s := query(":CHANnel?"); s != "OFF" {
+		t.Errorf("output %s after a waveform, was off", s)
+	}
+	set("gen.output", "ON", ":CHANnel?", "ON")
+	set("gen.wave", "RAMP", ":FUNCtion?", "RAMP")
+	time.Sleep(200 * time.Millisecond)
+	if s := query(":CHANnel?"); s != "ON" {
+		t.Errorf("output %s after a waveform, was on", s)
+	}
+}
+
 func TestAverager(t *testing.T) {
 	frame := func(scale string, raw ...float64) *Frame {
 		return &Frame{TimeScale: scale, Channels: []FrameChannel{{Name: "CH1", On: true, VoltsPerDiv: 1, Raw: raw}, {Name: "CH2"}}}

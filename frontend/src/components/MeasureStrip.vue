@@ -1,10 +1,13 @@
 <script setup lang="ts">
 // Measurements of each channel and of CH2 against CH1. The set to show is
-// chosen in a menu and kept between runs.
+// chosen in a menu and kept between runs. With statistics on, each
+// measurement also shows its mean, minimum, maximum and standard deviation
+// over the frames since the settings last changed.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { eng } from '../format'
 import { mathName, mathStats, mathUnit } from '../math'
 import { display, mathTrace } from '../state'
+import { push, sd, type Running } from '../stats'
 import type { Frame, FrameChannel, Measurements, Pair } from '../types'
 
 const props = defineProps<{ frame: Frame | null }>()
@@ -14,52 +17,60 @@ interface Def {
   label: string
   abbr: string
   title: string
-  show: (m: Measurements, dt: number) => string
+  get: (m: Measurements) => number | null
+  fmt: (v: number | null) => string
+  // show overrides fmt for the value of the frame.
+  show?: (m: Measurements, dt: number) => string
 }
 
-const volts = (k: keyof Measurements) => (m: Measurements) => eng(m[k] as number | null, 'В', 3)
+const V = (k: keyof Measurements) => ({ get: (m: Measurements) => m[k] as number | null, fmt: (v: number | null) => eng(v, 'В', 3) })
 const pct = (v: number | null) => (v == null ? '—' : `${v.toFixed(1)} %`)
 // An edge shorter than two samples is only known to be that short.
-const edge = (k: 'rise' | 'fall') => (m: Measurements, dt: number) => {
-  const v = m[k]
-  return v != null && v < 2 * dt ? `< ${eng(2 * dt, 'с', 3, true)}` : eng(v, 'с', 3)
-}
+const edge = (k: 'rise' | 'fall') => ({
+  get: (m: Measurements) => m[k],
+  fmt: (v: number | null) => eng(v, 'с', 3),
+  show: (m: Measurements, dt: number) => {
+    const v = m[k]
+    return v != null && v < 2 * dt ? `< ${eng(2 * dt, 'с', 3, true)}` : eng(v, 'с', 3)
+  },
+})
+const time = (k: keyof Measurements, sig: number) => ({ get: (m: Measurements) => m[k] as number | null, fmt: (v: number | null) => eng(v, 'с', sig) })
 
 const GROUPS: { name: string; defs: Def[] }[] = [
   {
     name: 'Напряжение',
     defs: [
-      { id: 'pp', label: 'Размах', abbr: 'Vpp', title: 'От минимума до максимума, с выбросами и шумом', show: volts('pp') },
-      { id: 'amp', label: 'Амплитуда', abbr: 'Vamp', title: 'От низа до верха: размах без выбросов. У синуса равна размаху', show: volts('amp') },
-      { id: 'max', label: 'Максимум', abbr: 'Vmax', title: 'Самая высокая точка на экране', show: volts('max') },
-      { id: 'min', label: 'Минимум', abbr: 'Vmin', title: 'Самая низкая точка на экране', show: volts('min') },
-      { id: 'top', label: 'Верх', abbr: 'Vtop', title: 'Вершина импульса без выброса: самый частый уровень в верхней половине. У синуса равен максимуму', show: volts('top') },
-      { id: 'base', label: 'Низ', abbr: 'Vbase', title: 'Основание импульса: самый частый уровень в нижней половине. У синуса равно минимуму', show: volts('base') },
-      { id: 'overshoot', label: 'Выброс', abbr: '', title: 'На сколько максимум выше верха, в процентах амплитуды', show: (m) => pct(m.overshoot) },
-      { id: 'preshoot', label: 'Предвыброс', abbr: '', title: 'На сколько минимум ниже низа, в процентах амплитуды', show: (m) => pct(m.preshoot) },
+      { id: 'pp', label: 'Размах', abbr: 'Vpp', title: 'От минимума до максимума, с выбросами и шумом', ...V('pp') },
+      { id: 'amp', label: 'Амплитуда', abbr: 'Vamp', title: 'От низа до верха: размах без выбросов. У синуса равна размаху', ...V('amp') },
+      { id: 'max', label: 'Максимум', abbr: 'Vmax', title: 'Самая высокая точка на экране', ...V('max') },
+      { id: 'min', label: 'Минимум', abbr: 'Vmin', title: 'Самая низкая точка на экране', ...V('min') },
+      { id: 'top', label: 'Верх', abbr: 'Vtop', title: 'Вершина импульса без выброса: самый частый уровень в верхней половине. У синуса равен максимуму', ...V('top') },
+      { id: 'base', label: 'Низ', abbr: 'Vbase', title: 'Основание импульса: самый частый уровень в нижней половине. У синуса равно минимуму', ...V('base') },
+      { id: 'overshoot', label: 'Выброс', abbr: '', title: 'На сколько максимум выше верха, в процентах амплитуды', get: (m) => m.overshoot, fmt: pct },
+      { id: 'preshoot', label: 'Предвыброс', abbr: '', title: 'На сколько минимум ниже низа, в процентах амплитуды', get: (m) => m.preshoot, fmt: pct },
     ],
   },
   {
     name: 'Средние',
     defs: [
-      { id: 'avg', label: 'Среднее', abbr: 'Vavg', title: 'Среднее по всему экрану', show: volts('avg') },
-      { id: 'rms', label: 'СКЗ', abbr: 'Vrms', title: 'Среднеквадратичное по всему экрану, вместе с постоянной составляющей', show: volts('rms') },
-      { id: 'cycAvg', label: 'Среднее пер.', abbr: 'Vavg', title: 'Среднее по целым периодам: часть периода на краю экрана не искажает результат', show: volts('cycAvg') },
-      { id: 'cycRms', label: 'СКЗ пер.', abbr: 'Vrms', title: 'Среднеквадратичное по целым периодам, вместе с постоянной составляющей', show: volts('cycRms') },
-      { id: 'acRms', label: 'СКЗ перем.', abbr: 'AC', title: 'Среднеквадратичное переменной составляющей по целым периодам: то, что покажет мультиметр в режиме ~V', show: volts('acRms') },
+      { id: 'avg', label: 'Среднее', abbr: 'Vavg', title: 'Среднее по всему экрану', ...V('avg') },
+      { id: 'rms', label: 'СКЗ', abbr: 'Vrms', title: 'Среднеквадратичное по всему экрану, вместе с постоянной составляющей', ...V('rms') },
+      { id: 'cycAvg', label: 'Среднее пер.', abbr: 'Vavg', title: 'Среднее по целым периодам: часть периода на краю экрана не искажает результат', ...V('cycAvg') },
+      { id: 'cycRms', label: 'СКЗ пер.', abbr: 'Vrms', title: 'Среднеквадратичное по целым периодам, вместе с постоянной составляющей', ...V('cycRms') },
+      { id: 'acRms', label: 'СКЗ перем.', abbr: 'AC', title: 'Среднеквадратичное переменной составляющей по целым периодам: то, что покажет мультиметр в режиме ~V', ...V('acRms') },
     ],
   },
   {
     name: 'Время',
     defs: [
-      { id: 'freq', label: 'Частота', abbr: 'f', title: 'Частоту считает сам прибор', show: (m) => eng(m.freq, 'Гц', 5) },
-      { id: 'period', label: 'Период', abbr: 'T', title: 'Период по частоте, которую считает прибор', show: (m) => eng(m.period, 'с', 4) },
-      { id: 'rise', label: 'Фронт', abbr: 'tr', title: 'Время нарастания от 10 до 90 % амплитуды', show: edge('rise') },
-      { id: 'fall', label: 'Спад', abbr: 'tf', title: 'Время спада от 90 до 10 % амплитуды', show: edge('fall') },
-      { id: 'pWidth', label: 'Ширина +', abbr: '+W', title: 'Длительность импульса выше уровня 50 %', show: (m) => eng(m.pWidth, 'с', 4) },
-      { id: 'nWidth', label: 'Ширина −', abbr: '−W', title: 'Длительность паузы ниже уровня 50 %', show: (m) => eng(m.nWidth, 'с', 4) },
-      { id: 'duty', label: 'Заполн. +', abbr: '+D', title: 'Доля периода выше уровня 50 %', show: (m) => pct(m.duty) },
-      { id: 'nDuty', label: 'Заполн. −', abbr: '−D', title: 'Доля периода ниже уровня 50 %', show: (m) => pct(m.duty == null ? null : 100 - m.duty) },
+      { id: 'freq', label: 'Частота', abbr: 'f', title: 'Частоту считает сам прибор', get: (m) => m.freq, fmt: (v) => eng(v, 'Гц', 5) },
+      { id: 'period', label: 'Период', abbr: 'T', title: 'Период по частоте, которую считает прибор', ...time('period', 4) },
+      { id: 'rise', label: 'Фронт', abbr: 'tr', title: 'Время нарастания от 10 до 90 % амплитуды', ...edge('rise') },
+      { id: 'fall', label: 'Спад', abbr: 'tf', title: 'Время спада от 90 до 10 % амплитуды', ...edge('fall') },
+      { id: 'pWidth', label: 'Ширина +', abbr: '+W', title: 'Длительность импульса выше уровня 50 %', ...time('pWidth', 4) },
+      { id: 'nWidth', label: 'Ширина −', abbr: '−W', title: 'Длительность паузы ниже уровня 50 %', ...time('nWidth', 4) },
+      { id: 'duty', label: 'Заполн. +', abbr: '+D', title: 'Доля периода выше уровня 50 %', get: (m) => m.duty, fmt: pct },
+      { id: 'nDuty', label: 'Заполн. −', abbr: '−D', title: 'Доля периода ниже уровня 50 %', get: (m) => (m.duty == null ? null : 100 - m.duty), fmt: pct },
     ],
   },
 ]
@@ -69,13 +80,15 @@ interface PairDef {
   label: string
   abbr: string
   title: string
-  show: (p: Pair) => string
+  get: (p: Pair) => number | null
+  fmt: (v: number | null) => string
+  fmtSd?: (v: number) => string
 }
 
 const PAIR: PairDef[] = [
-  { id: 'gain', label: 'Усиление', abbr: 'K', title: 'Отношение амплитуд основной гармоники CH2 и CH1, в разах и в децибелах, как на графике АЧХ. Шум и постоянная составляющая на него почти не влияют', show: (p) => (p.gain == null ? '—' : `${p.gain.toPrecision(3)} · ${signedDb(p.gain)}`) },
-  { id: 'phase', label: 'Фаза', abbr: 'φ', title: 'Сдвиг фазы основной гармоники CH2 относительно CH1. Минус: CH2 отстаёт, как на выходе ФНЧ', show: (p) => (p.phase == null ? '—' : `${p.phase.toFixed(1).replace('-', '−')}°`) },
-  { id: 'delay', label: 'Задержка', abbr: 'Δt', title: 'Время от фронта CH1 до ближайшего фронта CH2 по уровню 50 %, в пределах полупериода', show: (p) => eng(p.delay, 'с', 4) },
+  { id: 'gain', label: 'Усиление', abbr: 'K', title: 'Отношение амплитуд основной гармоники CH2 и CH1, в разах и в децибелах, как на графике АЧХ. Шум и постоянная составляющая на него почти не влияют', get: (p) => p.gain, fmt: (v) => (v == null ? '—' : `${v.toPrecision(3)} · ${signedDb(v)}`), fmtSd: (v) => v.toPrecision(2) },
+  { id: 'phase', label: 'Фаза', abbr: 'φ', title: 'Сдвиг фазы основной гармоники CH2 относительно CH1. Минус: CH2 отстаёт, как на выходе ФНЧ', get: (p) => p.phase, fmt: (v) => (v == null ? '—' : `${v.toFixed(1).replace('-', '−')}°`), fmtSd: (v) => `${v.toFixed(2)}°` },
+  { id: 'delay', label: 'Задержка', abbr: 'Δt', title: 'Время от фронта CH1 до ближайшего фронта CH2 по уровню 50 %, в пределах полупериода', get: (p) => p.delay, fmt: (v) => eng(v, 'с', 4) },
 ]
 
 function signedDb(k: number) {
@@ -110,6 +123,72 @@ function dtOf(f: Frame, c: FrameChannel) {
   return (f.timeDiv * 12) / (c.raw?.length || 600)
 }
 
+// ---- statistics ----
+
+const STATS_KEY = 'owon.measStats'
+const statsOn = ref(localStorage.getItem(STATS_KEY) === '1')
+watch(statsOn, (v) => {
+  try {
+    localStorage.setItem(STATS_KEY, v ? '1' : '0')
+  } catch {}
+  resetStats()
+})
+
+// Kept outside Vue's reactivity; tick tells the rows to read it again.
+let stats = new Map<string, Running>()
+let statsKey = ''
+let statsSeq = -1
+const statsFrames = ref(0)
+const tick = ref(0)
+
+function resetStats() {
+  stats = new Map()
+  statsKey = ''
+  statsFrames.value = 0
+  tick.value++
+}
+
+const MATH_DEFS: { id: string; label: string; get: (s: ReturnType<typeof mathStats>) => number }[] = [
+  { id: 'pp', label: 'Размах', get: (s) => s.pp },
+  { id: 'max', label: 'Максимум', get: (s) => s.max },
+  { id: 'min', label: 'Минимум', get: (s) => s.min },
+  { id: 'avg', label: 'Среднее', get: (s) => s.avg },
+  { id: 'rms', label: 'СКЗ', get: (s) => s.rms },
+]
+
+// Every new frame adds its values; a change of what places the traces on
+// the screen starts again, since the values before it are of another kind.
+watch(() => props.frame, (f) => {
+  if (!statsOn.value || !f || f.seq === statsSeq) return
+  const key = [f.timeDiv, f.hOffset, f.acqMode, f.depMem, display.math, ...f.channels.map((c) => `${c.on} ${c.voltsPerDiv} ${c.offset} ${c.coupling}`)].join('|')
+  if (key !== statsKey) {
+    resetStats()
+    statsKey = key
+  }
+  statsSeq = f.seq
+  const add = (id: string, v: number | null) => {
+    if (v != null && Number.isFinite(v)) stats.set(id, push(stats.get(id), v))
+  }
+  for (const c of f.channels) if (c.on && c.raw?.length) for (const d of ALL) add(`${c.name}.${d.id}`, d.get(c.meas))
+  if (f.pair) for (const d of PAIR) add(`pair.${d.id}`, d.get(f.pair))
+  const m = mathTrace.value
+  if (m) {
+    const s = mathStats(m.v)
+    for (const d of MATH_DEFS) add(`M.${d.id}`, d.get(s))
+  }
+  statsFrames.value++
+  tick.value++
+})
+
+// statOf gives the lines of statistics under a value.
+function statOf(id: string, fmt: (v: number | null) => string, fmtSd = (v: number) => fmt(v)) {
+  void tick.value
+  const s = stats.get(id)
+  if (!statsOn.value) return null
+  if (!s) return ['—', '—', '—', '—']
+  return [fmt(s.mean), fmt(s.min), fmt(s.max), fmtSd(sd(s))]
+}
+
 const rows = computed(() => {
   const f = props.frame
   if (!f) return []
@@ -119,7 +198,11 @@ const rows = computed(() => {
     .map((c) => ({
       name: c.name,
       clipped: c.meas.clipped,
-      items: defs.map((d) => ({ ...d, value: d.show(c.meas, dtOf(f, c)) })),
+      items: defs.map((d) => ({
+        ...d,
+        value: d.show ? d.show(c.meas, dtOf(f, c)) : d.fmt(d.get(c.meas)),
+        stat: statOf(`${c.name}.${d.id}`, d.fmt),
+      })),
     }))
 })
 
@@ -128,24 +211,21 @@ const mathItems = computed(() => {
   const m = mathTrace.value
   if (!m) return null
   const s = mathStats(m.v), u = mathUnit(display.math)
+  const fmt = (v: number | null) => eng(v, u, 3)
   return {
     name: mathName(display.math),
     clipped: m.clipped,
-    items: [
-      { id: 'pp', label: 'Размах', value: eng(s.pp, u, 3) },
-      { id: 'max', label: 'Максимум', value: eng(s.max, u, 3) },
-      { id: 'min', label: 'Минимум', value: eng(s.min, u, 3) },
-      { id: 'avg', label: 'Среднее', value: eng(s.avg, u, 3) },
-      { id: 'rms', label: 'СКЗ', value: eng(s.rms, u, 3) },
-    ],
+    items: MATH_DEFS.map((d) => ({ id: d.id, label: d.label, value: fmt(d.get(s)), stat: statOf(`M.${d.id}`, fmt) })),
   }
 })
 
 const pairItems = computed(() => {
   const p = props.frame?.pair
   if (!p) return []
-  return PAIR.filter((d) => chosen.value.includes(d.id)).map((d) => ({ ...d, value: d.show(p) }))
+  return PAIR.filter((d) => chosen.value.includes(d.id)).map((d) => ({ ...d, value: d.fmt(d.get(p)), stat: statOf(`pair.${d.id}`, d.fmt, d.fmtSd) }))
 })
+
+const STAT_LINES = ['ср.', 'мин', 'макс', 'σ']
 
 // ---- menu ----
 
@@ -178,22 +258,30 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
   <div class="strip">
     <div v-for="(r, i) in rows" :key="r.name" class="row" :class="r.name.toLowerCase()">
       <span class="tag">{{ r.name }}</span>
+      <div v-if="statsOn" class="legend"><span class="k">&nbsp;</span><span class="v">сейчас</span><span v-for="l in STAT_LINES" :key="l" class="s">{{ l }}</span></div>
       <div v-for="it in r.items" :key="it.id" class="item" :title="it.title">
         <span class="k">{{ it.label }} <span v-if="it.abbr" class="ab">{{ it.abbr }}</span></span>
         <span class="v mono">{{ it.value }}</span>
+        <span v-for="(s, j) in it.stat ?? []" :key="j" class="s mono">{{ s }}</span>
       </div>
       <span v-if="!r.items.length" class="muted hint">Выберите измерения в меню справа</span>
       <span class="end">
         <span v-if="r.clipped" class="clip" title="Часть сигнала за краем экрана: размах и амплитуда занижены. Увеличьте В/дел.">за экраном</span>
+        <template v-if="i === 0 && statsOn">
+          <span class="mono frames" title="Сколько кадров вошло в статистику с последней смены настроек">{{ statsFrames }} кадр.</span>
+          <button class="ghost cfg" title="Начать статистику заново" @click="resetStats">⟲</button>
+        </template>
         <button v-if="i === 0" class="ghost cfg" :class="{ on: open }" title="Выбрать, какие измерения показывать" @click="toggleMenu">⚙</button>
       </span>
     </div>
     <div v-if="mathItems" class="row math">
       <span class="tag" :title="`Математика: ${mathItems.name}, по всему экрану`">M</span>
       <span class="mono fn">{{ mathItems.name }}</span>
+      <div v-if="statsOn" class="legend"><span class="k">&nbsp;</span><span class="v">сейчас</span><span v-for="l in STAT_LINES" :key="l" class="s">{{ l }}</span></div>
       <div v-for="it in mathItems.items" :key="it.id" class="item">
         <span class="k">{{ it.label }}</span>
         <span class="v mono">{{ it.value }}</span>
+        <span v-for="(s, j) in it.stat ?? []" :key="j" class="s mono">{{ s }}</span>
       </div>
       <span class="end">
         <span v-if="mathItems.clipped" class="clip" title="Канал за краем экрана: и результат неверен. Увеличьте В/дел.">за экраном</span>
@@ -201,9 +289,11 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
     </div>
     <div v-if="pairItems.length" class="row pair">
       <span class="tag" title="CH2 относительно CH1">1→2</span>
+      <div v-if="statsOn" class="legend"><span class="k">&nbsp;</span><span class="v">сейчас</span><span v-for="l in STAT_LINES" :key="l" class="s">{{ l }}</span></div>
       <div v-for="it in pairItems" :key="it.id" class="item" :title="it.title">
         <span class="k">{{ it.label }} <span class="ab">{{ it.abbr }}</span></span>
         <span class="v mono">{{ it.value }}</span>
+        <span v-for="(s, j) in it.stat ?? []" :key="j" class="s mono">{{ s }}</span>
       </div>
     </div>
     <div v-if="!rows.length" class="row empty muted">Измерения появятся, когда придут данные с прибора</div>
@@ -227,6 +317,9 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
         </div>
       </div>
       <div class="actions">
+        <label class="stats" title="Под каждым измерением: среднее, минимум, максимум и стандартное отклонение по кадрам с последней смены настроек">
+          <input v-model="statsOn" type="checkbox" /> Статистика по кадрам
+        </label>
         <button class="ghost" @click="chosen = [...DEFAULT]">По умолчанию</button>
         <button class="ghost" @click="chosen = [...ALL.map((d) => d.id), ...PAIR.map((d) => d.id)]">Все</button>
         <button class="ghost" @click="chosen = []">Ничего</button>
@@ -256,9 +349,13 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
 .fn { font-size: 12px; color: var(--muted); min-width: 74px; }
 .tag { font-weight: 600; color: var(--c); width: 30px; white-space: nowrap; }
 .item { display: flex; flex-direction: column; min-width: 74px; }
-.k { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.k { font-size: 11px; line-height: 14px; color: var(--muted); white-space: nowrap; }
 .ab { color: var(--dim); font-size: 10px; }
-.v { font-size: 13px; white-space: nowrap; }
+.v { font-size: 13px; line-height: 17px; white-space: nowrap; }
+.s { font-size: 11px; line-height: 15px; color: var(--muted); white-space: nowrap; }
+.legend { display: flex; flex-direction: column; min-width: 40px; margin-left: -8px; }
+.legend .v, .legend .s { font-size: 11px; color: var(--dim); }
+.frames { font-size: 11px; color: var(--muted); }
 .hint { font-size: 12px; }
 .end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .clip {
@@ -286,6 +383,7 @@ onBeforeUnmount(() => window.removeEventListener('mousedown', outside))
 .gname { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
 .col label { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; padding: 2px 0; white-space: nowrap; }
 .note { font-size: 11px; max-width: 170px; margin: 6px 0 0; line-height: 1.35; }
+.stats { display: flex; align-items: center; gap: 6px; font-size: 12px; margin-right: auto; cursor: pointer; }
 .actions { display: flex; gap: 4px; justify-content: flex-end; border-top: 1px solid var(--line); margin-top: 10px; padding-top: 6px; }
 .actions button { font-size: 12px; }
 </style>

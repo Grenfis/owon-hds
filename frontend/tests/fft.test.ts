@@ -1,7 +1,7 @@
 // Run with: npm test
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { WINDOWS, isInterleaveImage, peaks, spectrum, thd } from '../src/fft.ts'
+import { WINDOWS, isInterleaveImage, peakNear, peaks, spectrum, thd } from '../src/fft.ts'
 
 // One screen as the device sends it: 600 samples over 12 divisions of 500 µs.
 const N = 600, DT = 6e-3 / N
@@ -60,4 +60,13 @@ test('two close tones stay two peaks', () => {
   const ps = peaks(spectrum(v, DT, 'hann'), 2)
   assert.equal(ps.length, 2)
   assert.ok(Math.abs(ps[1].freq - 6000) < 40, `second peak ${ps[1].freq}`)
+})
+
+test('a bin near a peak lands on it', () => {
+  const rms = [0, 1, 5, 1, 0, 0, 2]
+  assert.equal(peakNear(rms, 3, 1), 2)
+  assert.equal(peakNear(rms, 4, 1), 4 - 1)
+  assert.equal(peakNear(rms, 5, 1), 6)
+  assert.equal(peakNear(rms, 9, 2), 6)
+  assert.equal(peakNear(rms, -3, 0), 0)
 })

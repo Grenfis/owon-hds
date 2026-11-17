@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Spectrum of one channel, computed here from the screen samples of every
 // frame: the device has an FFT menu of its own, but no commands for it.
+// Cursors measure the frequency and level between two points.
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { WINDOWS, db, isInterleaveImage, peaks, spectrum, thd, type Peak, type Spectrum, type WindowName } from '../fft'
+import { WINDOWS, db, isInterleaveImage, peakNear, peaks, spectrum, thd, type Peak, type Spectrum, type WindowName } from '../fft'
 import { eng, stamp } from '../format'
 import type { Frame } from '../types'
 import Seg from './Seg.vue'
@@ -14,7 +15,8 @@ const DIVX = 10, DIVY = 8
 const M = { l: 58, r: 14, t: 10, b: 24 }
 
 const SETTINGS_KEY = 'owon.fft'
-const opts = reactive({ source: 'CH1', window: 'hann' as WindowName, scale: 'db', dbDiv: '10', zoom: '1', avg: '0' })
+// Cursor positions are shares of the plot width and height.
+const opts = reactive({ source: 'CH1', window: 'hann' as WindowName, scale: 'db', dbDiv: '10', zoom: '1', avg: '0', cur: 'off', cf: [0.2, 0.4], ca: [0.25, 0.6] })
 try {
   Object.assign(opts, JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}'))
 } catch {}
@@ -27,6 +29,15 @@ const SCALES = [
 ]
 const DB_DIVS = ['5', '10', '20'].map((v) => ({ value: v, label: v }))
 const ZOOMS = ['1', '2', '5', '10'].map((v) => ({ value: v, label: `×${v}`, title: `Показать первую 1/${v} полосы` }))
+const CURSOR_MODES = [
+  { value: 'off', label: 'Выкл' },
+  { value: 'f', label: 'f', title: 'Две вертикальные линии: частоты и уровни спектра на них. Линия встаёт на ближайший пик' },
+  { value: 'a', label: 'A', title: 'Две горизонтальные линии: уровни' },
+  { value: 'fa', label: 'f+A', title: 'Обе пары линий' },
+]
+const hasF = (m: string) => m === 'f' || m === 'fa'
+const hasA = (m: string) => m === 'a' || m === 'fa'
+
 const AVGS = [
   { value: '0', label: 'Выкл' },
   { value: '4', label: '4', title: 'Усреднять мощность по 4 кадрам' },
@@ -221,7 +232,95 @@ function draw() {
   })
   g.restore()
 
-  if (hover.value) drawHover(g, p, r, sp, yOf)
+  drawCursors(g, p, r, sp, yOf, top, bottom)
+  if (hover.value && !drag.value) drawHover(g, p, r, sp, yOf)
+}
+
+// The bin under a frequency cursor.
+function cursorBin(r: Result, frac: number, sp: number) {
+  return Math.max(0, Math.min(r.s.rms.length - 1, Math.round((frac * sp) / r.s.df)))
+}
+
+// drawCursors draws the cursor lines and, in the upper right corner, what
+// they read: the frequency cursors the spectrum at them, the level cursors
+// their levels, and the difference from cursor 1 to cursor 2.
+function drawCursors(g: CanvasRenderingContext2D, p: ReturnType<typeof plotRect>, r: Result, sp: number, yOf: (v: number) => number, top: number, bottom: number) {
+  const mode = opts.cur
+  if (mode === 'off') return
+  g.save()
+  g.beginPath()
+  g.rect(p.x, p.y, p.w, p.h)
+  g.clip()
+  g.lineWidth = 1
+  g.font = '600 10px Segoe UI, sans-serif'
+  g.setLineDash([6, 4])
+  g.strokeStyle = 'rgba(230,232,237,.7)'
+  g.fillStyle = '#e6e8ed'
+  if (hasF(mode)) {
+    g.textAlign = 'left'
+    g.textBaseline = 'bottom'
+    opts.cf.forEach((frac, i) => {
+      const x = p.x + frac * p.w
+      g.beginPath()
+      line(g, x, p.y, x, p.y + p.h)
+      g.stroke()
+      g.fillText(String(i + 1), x + 3, p.y + p.h - 3)
+      const k = cursorBin(r, frac, sp)
+      g.beginPath()
+      g.arc(p.x + ((k * r.s.df) / sp) * p.w, yOf(r.s.rms[k]), 3, 0, Math.PI * 2)
+      g.fill()
+    })
+  }
+  if (hasA(mode)) {
+    g.textAlign = 'left'
+    g.textBaseline = 'bottom'
+    opts.ca.forEach((frac, i) => {
+      const y = p.y + frac * p.h
+      g.beginPath()
+      line(g, p.x, y, p.x + p.w, y)
+      g.stroke()
+      g.fillText(String(i + 1), p.x + 4, y - 2)
+    })
+  }
+  g.setLineDash([])
+  g.restore()
+
+  const lin = opts.scale === 'lin'
+  const ratio = (a: number, b: number) => (a > 0 ? `×${(b / a).toPrecision(3)}` : '')
+  const dbDiff = (d: number) => `${d > 0 ? '+' : ''}${d.toFixed(1).replace('-', '−')} дБ`
+  const rows: [string, string][] = []
+  if (hasF(mode)) {
+    const [k1, k2] = opts.cf.map((frac) => cursorBin(r, frac, sp))
+    const [v1, v2] = [r.s.rms[k1], r.s.rms[k2]]
+    rows.push(['1', `${eng(k1 * r.s.df, 'Гц', 4)}  ${fmtLevel(v1)}`])
+    rows.push(['2', `${eng(k2 * r.s.df, 'Гц', 4)}  ${fmtLevel(v2)}`])
+    rows.push(['Δ', `${eng((k2 - k1) * r.s.df, 'Гц', 4)}  ${dbDiff(db(v2) - db(v1))}  ${ratio(v1, v2)}`])
+  }
+  if (hasA(mode)) {
+    const [l1, l2] = opts.ca.map((frac) => top - frac * (top - bottom))
+    const fmt = (l: number) => (lin ? eng(l, 'В', 3) : `${l.toFixed(1).replace('-', '−')} дБВ`)
+    rows.push(['A', `${fmt(l1)} / ${fmt(l2)}  Δ ${lin ? `${eng(l2 - l1, 'В', 3)} ${ratio(l1, l2)}` : dbDiff(l2 - l1)}`])
+  }
+  g.font = '12px Cascadia Mono, Consolas, monospace'
+  const w = 26 + Math.max(...rows.map(([, t]) => g.measureText(t).width)) + 12
+  const h = rows.length * 17 + 8
+  const bx = p.x + p.w - w - 8, by = p.y + 8
+  g.fillStyle = 'rgba(20,23,30,.85)'
+  g.strokeStyle = '#323947'
+  g.beginPath()
+  g.roundRect(bx, by, w, h, 6)
+  g.fill()
+  g.stroke()
+  g.textBaseline = 'middle'
+  rows.forEach(([k, t], i) => {
+    const y = by + 13 + i * 17
+    g.textAlign = 'left'
+    g.fillStyle = '#8f97a8'
+    g.fillText(k, bx + 9, y)
+    g.textAlign = 'right'
+    g.fillStyle = '#e6e8ed'
+    g.fillText(t, bx + w - 9, y)
+  })
 }
 
 function drawHover(g: CanvasRenderingContext2D, p: ReturnType<typeof plotRect>, r: Result, sp: number, yOf: (v: number) => number) {
@@ -229,10 +328,7 @@ function drawHover(g: CanvasRenderingContext2D, p: ReturnType<typeof plotRect>, 
   if (mx < p.x || mx > p.x + p.w) return
   const f = ((mx - p.x) / p.w) * sp
   // Snap to the strongest bin within a few pixels, so that peaks are easy to hit.
-  const reach = Math.max(1, Math.round(((4 / p.w) * sp) / r.s.df))
-  let k = Math.round(f / r.s.df)
-  const k0 = k
-  for (let j = Math.max(0, k0 - reach); j <= Math.min(r.s.rms.length - 1, k0 + reach); j++) if (r.s.rms[j] > r.s.rms[k]) k = j
+  const k = peakNear(r.s.rms, Math.round(f / r.s.df), Math.max(1, Math.round(((4 / p.w) * sp) / r.s.df)))
   const x = p.x + ((k * r.s.df) / sp) * p.w, y = yOf(r.s.rms[k])
   g.strokeStyle = 'rgba(230,232,237,.35)'
   g.setLineDash([3, 3])
@@ -267,9 +363,68 @@ function line(g: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y
   g.lineTo(Math.round(x2) + 0.5, Math.round(y2) + 0.5)
 }
 
-function move(e: MouseEvent) {
+function pos(e: MouseEvent) {
   const b = canvas.value!.getBoundingClientRect()
-  hover.value = { x: e.clientX - b.left, y: e.clientY - b.top }
+  return { x: e.clientX - b.left, y: e.clientY - b.top }
+}
+
+function move(e: MouseEvent) {
+  const p = pos(e)
+  hover.value = p
+  const hit = drag.value ?? cursorAt(p)
+  canvas.value!.style.cursor = hit?.kind === 'f' ? 'ew-resize' : hit?.kind === 'a' ? 'ns-resize' : 'crosshair'
+  schedule()
+}
+
+// ---- cursor dragging ----
+
+type CursorDrag = { kind: 'f' | 'a'; i: 0 | 1 }
+const drag = ref<CursorDrag | null>(null)
+
+function cursorAt(q: { x: number; y: number }): CursorDrag | null {
+  const p = plotRect()
+  if (!result.value || q.x < p.x || q.x > p.x + p.w || q.y < p.y || q.y > p.y + p.h) return null
+  let best: CursorDrag | null = null, bd = 8
+  if (hasF(opts.cur)) {
+    opts.cf.forEach((frac, i) => {
+      const d = Math.abs(q.x - (p.x + frac * p.w))
+      if (d < bd) [best, bd] = [{ kind: 'f', i: i as 0 | 1 }, d]
+    })
+  }
+  if (hasA(opts.cur)) {
+    opts.ca.forEach((frac, i) => {
+      const d = Math.abs(q.y - (p.y + frac * p.h))
+      if (d < bd) [best, bd] = [{ kind: 'a', i: i as 0 | 1 }, d]
+    })
+  }
+  return best
+}
+
+function down(e: MouseEvent) {
+  drag.value = cursorAt(pos(e))
+  if (!drag.value) return
+  window.addEventListener('mousemove', dragMove)
+  window.addEventListener('mouseup', dragEnd, { once: true })
+}
+
+function dragMove(e: MouseEvent) {
+  const d = drag.value, q = pos(e), p = plotRect(), r = result.value
+  if (!d) return
+  const clamp = (v: number) => Math.max(0, Math.min(1, v))
+  if (d.kind === 'a') {
+    opts.ca[d.i] = clamp((q.y - p.y) / p.h)
+  } else if (r) {
+    // A frequency cursor lands on a peak within a few pixels.
+    const sp = span(r)
+    const k = peakNear(r.s.rms, Math.round((clamp((q.x - p.x) / p.w) * sp) / r.s.df), Math.max(1, Math.round(((6 / p.w) * sp) / r.s.df)))
+    opts.cf[d.i] = clamp((k * r.s.df) / sp)
+  }
+  schedule()
+}
+
+function dragEnd() {
+  window.removeEventListener('mousemove', dragMove)
+  drag.value = null
   schedule()
 }
 
@@ -317,8 +472,11 @@ onMounted(() => {
   ro.observe(box.value!)
   compute(props.frame)
 })
-onBeforeUnmount(() => ro?.disconnect())
-watch([result, () => opts.scale, () => opts.dbDiv, () => opts.zoom], schedule)
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  window.removeEventListener('mousemove', dragMove)
+})
+watch([result, () => opts.scale, () => opts.dbDiv, () => opts.zoom, () => opts.cur], schedule)
 </script>
 
 <template>
@@ -334,12 +492,14 @@ watch([result, () => opts.scale, () => opts.dbDiv, () => opts.zoom], schedule)
       <Seg v-model="opts.zoom" :options="ZOOMS" />
       <span class="lbl">Усреднение</span>
       <Seg v-model="opts.avg" :options="AVGS" />
+      <span class="lbl">Курсоры</span>
+      <Seg v-model="opts.cur" :options="CURSOR_MODES" />
       <span class="grow" />
       <button class="ghost" :disabled="!result" title="Сохранить спектр в CSV" @click="exportCSV">CSV</button>
       <button class="ghost" :disabled="!result" title="Сохранить картинку спектра" @click="exportPNG">PNG</button>
     </div>
     <div ref="box" class="plot">
-      <canvas ref="canvas" @mousemove="move" @mouseleave="hover = null; schedule()" />
+      <canvas ref="canvas" @mousedown="down" @mousemove="move" @mouseleave="hover = null; schedule()" />
       <div v-if="!result" class="empty muted">Нет данных: включите канал {{ opts.source }} или подключите прибор</div>
     </div>
     <div v-if="result" class="peaks" :style="{ '--c': `var(--${result.name.toLowerCase()})` }">
@@ -371,7 +531,7 @@ watch([result, () => opts.scale, () => opts.dbDiv, () => opts.zoom], schedule)
 </template>
 
 <style scoped>
-.spectrum { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.spectrum { display: flex; flex-direction: column; gap: 6px; }
 .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
 .title { font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
 .lbl { color: var(--muted); margin-left: 4px; }

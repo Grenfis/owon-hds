@@ -166,6 +166,14 @@ export function thd(s: Spectrum, f1: Peak): number | null {
   return found ? Math.sqrt(sum) / f1.rms : null
 }
 
+// peakNear returns the strongest bin within reach of bin k, so that a mouse
+// or a cursor near a peak lands on it.
+export function peakNear(rms: ArrayLike<number>, k: number, reach: number): number {
+  let best = Math.max(0, Math.min(rms.length - 1, k))
+  for (let j = Math.max(0, k - reach); j <= Math.min(rms.length - 1, k + reach); j++) if (rms[j] > rms[best]) best = j
+  return best
+}
+
 export function db(v: number): number {
   return 20 * Math.log10(Math.max(v, 1e-12))
 }

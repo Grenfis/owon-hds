@@ -368,7 +368,7 @@ watch([() => sweep.points.length, () => sweep.freq, () => sweep.state, hover, ()
 </template>
 
 <style scoped>
-.bode { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.bode { display: flex; flex-direction: column; gap: 6px; }
 .bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 .title { font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 12px; margin-right: 4px; }
 .lbl { color: var(--muted); }

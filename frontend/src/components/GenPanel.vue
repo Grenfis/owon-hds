@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { TIMEBASES, eng } from '../format'
-import { gen, readGen, set, setGen } from '../state'
+import { TIMEBASES, eng, parseInput } from '../format'
+import { fmtFreq, sweepError } from '../gensweep'
+import { gen, genSweep, readGen, set, setGen, startGenSweep, stopGenSweep } from '../state'
 import DigitKnob from './DigitKnob.vue'
+import Seg from './Seg.vue'
 
 const props = defineProps<{ disabled: boolean }>()
 
@@ -45,7 +47,8 @@ let followTimer = 0
 watch(
   () => gen.freq,
   (f) => {
-    if (!followTime.value || props.disabled || !(f > 0)) return
+    // A sweep would change the time base at every step.
+    if (!followTime.value || props.disabled || genSweep.running || !(f > 0)) return
     clearTimeout(followTimer)
     followTimer = window.setTimeout(() => {
       const want = 2.5 / (f * 12)
@@ -54,6 +57,24 @@ watch(
     }, 120)
   },
 )
+
+// ---- frequency sweep ----
+
+const SWEEP_SCALES = [
+  { value: 'log', label: 'Лог', title: 'Равные шаги логарифма частоты: каждая декада занимает одинаковое время' },
+  { value: 'lin', label: 'Лин', title: 'Равные шаги частоты' },
+]
+const sweepShown = ref(localStorage.getItem('owon.genSweepShown') === '1')
+watch(sweepShown, (v) => localStorage.setItem('owon.genSweepShown', v ? '1' : '0'))
+const sweepProblem = computed(() => sweepError(genSweep, maxFreq.value))
+watch(() => props.disabled, (d) => d && stopGenSweep(false))
+
+function setNum(key: 'f1' | 'f2' | 'time', e: Event) {
+  const input = e.target as HTMLInputElement
+  const v = parseInput(input.value)
+  if (v != null && v > 0) genSweep[key] = v
+  input.value = key === 'time' ? String(genSweep.time) : fmtFreq(genSweep[key])
+}
 
 const reading = ref(false)
 async function reread() {
@@ -133,9 +154,23 @@ async function reread() {
           @update:model-value="setGen('freq', $event)"
         />
         <div class="presets">
-          <button v-for="p in PRESETS" :key="p" class="ghost" :disabled="disabled || p > maxFreq" @click="setGen('freq', p)">
+          <button v-for="p in PRESETS" :key="p" class="ghost" :disabled="disabled || p > maxFreq || genSweep.running" @click="setGen('freq', p)">
             {{ eng(p, 'Гц', 3, true) }}
           </button>
+          <span class="grow" />
+          <button class="ghost" :class="{ on: sweepShown }" title="Качание частоты: генератор проходит от одной частоты до другой за заданное время" @click="sweepShown = !sweepShown">Качание…</button>
+        </div>
+        <div v-if="sweepShown || genSweep.running" class="gsweep">
+          <label>от <input class="num mono" :value="fmtFreq(genSweep.f1)" :disabled="genSweep.running" title="Начальная частота, Гц: 100, 1k, 2.5M" @change="setNum('f1', $event)" /></label>
+          <label>до <input class="num mono" :value="fmtFreq(genSweep.f2)" :disabled="genSweep.running" title="Конечная частота, Гц" @change="setNum('f2', $event)" /></label>
+          <label>за <input class="num short mono" :value="genSweep.time" :disabled="genSweep.running" title="Время прохода, с" @change="setNum('time', $event)" /> с</label>
+          <Seg :options="SWEEP_SCALES" :model-value="genSweep.log ? 'log' : 'lin'" :disabled="genSweep.running" @update:model-value="genSweep.log = $event === 'log'" />
+          <label title="Проходить снова и снова, пока не остановить"><input v-model="genSweep.repeat" type="checkbox" :disabled="genSweep.running" /> по кругу</label>
+          <button v-if="!genSweep.running" :disabled="disabled || !!sweepProblem" :title="sweepProblem || 'Начать качание'" @click="startGenSweep">▶ Качать</button>
+          <button v-else class="stopsw" title="Остановить и вернуть прежнюю частоту" @click="stopGenSweep()">■ Остановить</button>
+          <span v-if="genSweep.running" class="progress"><span :style="{ width: `${genSweep.at * 100}%` }" /></span>
+          <span v-if="sweepProblem" class="warn">{{ sweepProblem }}</span>
+          <span v-else-if="!gen.output" class="muted">выход выключен</span>
         </div>
       </div>
       <DigitKnob
@@ -233,5 +268,16 @@ h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--muted); text-tra
 .freq { flex: 2 1 300px; display: flex; flex-direction: column; gap: 4px; }
 .presets { display: flex; gap: 2px; flex-wrap: wrap; }
 .presets button { font-size: 12px; padding: 2px 8px; }
+.presets .grow { flex: 1; }
+.presets button.on { color: var(--text); background: var(--panel-3); }
+.gsweep { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.gsweep label { display: flex; align-items: center; gap: 4px; }
+.gsweep .num { width: 64px; font-size: 12px; padding: 2px 5px; }
+.gsweep .num.short { width: 40px; }
+.gsweep button { font-size: 12px; padding: 3px 9px; }
+.stopsw { background: var(--err-bg); border-color: #6b2a2f; color: #ffd0d0; }
+.progress { width: 80px; height: 4px; border-radius: 2px; background: var(--panel-3); overflow: hidden; }
+.progress span { display: block; height: 100%; background: var(--accent); }
+.warn { color: var(--warn); }
 .disabled .knobs, .disabled .waves { opacity: .55; }
 </style>

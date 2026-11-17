@@ -2,6 +2,7 @@ import { computed, reactive, ref, shallowRef, triggerRef, watch } from 'vue'
 import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
+import { sweepAt, type GenSweep } from './gensweep'
 import { fitMath, mathOf, type MathOp } from './math'
 import type { PersistMode } from './persist'
 import { MAX_FRAMES, type RecFrame } from './record'
@@ -221,6 +222,57 @@ export const distortion = newSweep()
 const sweepOf = (mode?: string) => (mode === 'amp' ? distortion : sweep)
 export const sweeping = computed(() => sweep.state === 'running' || distortion.state === 'running')
 
+// The software sweep of the generator frequency. Its settings are kept
+// between runs; a step goes out every 100 ms, about as often as the loop
+// reads frames. A sweep of the Go side owns the generator, and so does a
+// lost connection: both stop it.
+const GEN_SWEEP_KEY = 'owon.genSweep'
+export const genSweep = reactive({ f1: 100, f2: 100e3, time: 10, log: true, repeat: false, running: false, at: 0 })
+try {
+  const s = JSON.parse(localStorage.getItem(GEN_SWEEP_KEY) ?? '{}')
+  for (const k of ['f1', 'f2', 'time'] as const) if (typeof s[k] === 'number') genSweep[k] = s[k]
+  for (const k of ['log', 'repeat'] as const) if (typeof s[k] === 'boolean') genSweep[k] = s[k]
+} catch {}
+watch(
+  () => [genSweep.f1, genSweep.f2, genSweep.time, genSweep.log, genSweep.repeat],
+  () => {
+    const { f1, f2, time, log, repeat } = genSweep
+    localStorage.setItem(GEN_SWEEP_KEY, JSON.stringify({ f1, f2, time, log, repeat }))
+  },
+)
+let genTimer = 0, genStart = 0, freqBefore = 0
+
+export function startGenSweep() {
+  if (genSweep.running) return
+  freqBefore = gen.freq
+  genSweep.running = true
+  genStart = performance.now()
+  genStep()
+  genTimer = window.setInterval(genStep, 100)
+}
+
+function genStep() {
+  const t = (performance.now() - genStart) / 1000
+  const f = sweepAt(genSweep as GenSweep, t)
+  if (f == null) {
+    stopGenSweep()
+    return
+  }
+  genSweep.at = (t % genSweep.time) / genSweep.time
+  if (f !== gen.freq) setGen('freq', f)
+}
+
+// stopGenSweep puts back the frequency there was before the sweep, unless
+// the generator is no longer the sweep's to change.
+export function stopGenSweep(restore = true) {
+  if (!genSweep.running) return
+  clearInterval(genTimer)
+  genSweep.running = false
+  genSweep.at = 0
+  if (restore) setGen('freq', freqBefore)
+}
+watch(sweeping, (s) => s && stopGenSweep(false))
+
 export async function startSweep(cfg: SweepConfig) {
   const s = sweepOf(cfg.mode)
   Object.assign(s, { state: 'running', index: 0, total: 0, freq: 0, amp: 0, start: cfg.start, stop: cfg.stop, points: [], error: '' })
@@ -257,7 +309,10 @@ export function init() {
   on('status', (s: Status) => {
     const was = status.value.connected
     status.value = s
-    if (!s.connected) liveFrame = null
+    if (!s.connected) {
+      liveFrame = null
+      stopGenSweep(false)
+    }
     if (!s.connected && !rec.viewing) frame.value = null
     // Also after an automatic reconnect: the generator may have been changed
     // on the device meanwhile.

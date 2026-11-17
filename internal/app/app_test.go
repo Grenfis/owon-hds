@@ -2,6 +2,7 @@ package app
 
 import (
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -279,3 +280,30 @@ func TestAverager(t *testing.T) {
 
 // first2 returns the two samples of CH1 in these tests.
 func first2(f *Frame) [2]float64 { return [2]float64{f.Channels[0].Raw[0], f.Channels[0].Raw[1]} }
+
+func TestWriteFile(t *testing.T) {
+	a := New(func(string, any) {})
+	if _, err := a.WriteFile("a.csv", "eA=="); err == nil {
+		t.Fatal("wrote without a folder")
+	}
+	if _, err := a.ChooseFolder(); err == nil {
+		t.Fatal("chose a folder without a dialog")
+	}
+	dir := t.TempDir()
+	a.FolderDialog = func() (string, error) { return dir, nil }
+	if d, err := a.ChooseFolder(); err != nil || d != dir {
+		t.Fatalf("folder %q, %v", d, err)
+	}
+	for _, bad := range []string{"../x.csv", `..\x.csv`, "sub/x.csv", "C:x.csv", "", ".."} {
+		if _, err := a.WriteFile(bad, "eA=="); err == nil {
+			t.Errorf("wrote %q", bad)
+		}
+	}
+	p, err := a.WriteFile("a.csv", "eA==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "x" {
+		t.Fatalf("%s holds %q", p, b)
+	}
+}

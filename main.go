@@ -28,6 +28,9 @@ func main() {
 	a.SaveDialog = func(name string) (string, error) {
 		return runtime.SaveFileDialog(*wctx.Load(), runtime.SaveDialogOptions{DefaultFilename: name})
 	}
+	a.FolderDialog = func() (string, error) {
+		return runtime.OpenDirectoryDialog(*wctx.Load(), runtime.OpenDialogOptions{Title: "Папка для снимков"})
+	}
 
 	err := wails.Run(&options.App{
 		Title:            "OWON HDS272S",

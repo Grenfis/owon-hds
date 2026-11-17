@@ -41,16 +41,33 @@ export function on(event: string, fn: Handler): () => void {
 // or as a browser download otherwise. Returns the path or file name, or ''
 // when the user cancelled.
 export async function saveFile(name: string, data: Blob): Promise<string> {
-  if (!isDesktop) {
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(data)
-    a.download = name
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
-    return name
-  }
+  if (!isDesktop) return download(name, data)
+  return call<string>('SaveFile', name, await base64(data))
+}
+
+function download(name: string, data: Blob): string {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(data)
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  return name
+}
+
+async function base64(data: Blob): Promise<string> {
   const buf = new Uint8Array(await data.arrayBuffer())
   let bin = ''
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
-  return call<string>('SaveFile', name, btoa(bin))
+  return btoa(bin)
+}
+
+// chooseFolder asks once for a folder that writeFile then fills without
+// asking. In the browser there is no folder, and files go to the downloads.
+export async function chooseFolder(): Promise<string> {
+  return isDesktop ? call<string>('ChooseFolder') : 'загрузки браузера'
+}
+
+export async function writeFile(name: string, data: Blob): Promise<string> {
+  if (!isDesktop) return download(name, data)
+  return call<string>('WriteFile', name, await base64(data))
 }

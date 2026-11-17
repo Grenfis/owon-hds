@@ -10,13 +10,15 @@ import GenPanel from './components/GenPanel.vue'
 import HelpView from './components/HelpView.vue'
 import ImpedanceView from './components/ImpedanceView.vue'
 import MeasureStrip from './components/MeasureStrip.vue'
+import RecordView from './components/RecordView.vue'
 import ScopeCanvas from './components/ScopeCanvas.vue'
 import ScopeControls from './components/ScopeControls.vue'
 import SpectrumView from './components/SpectrumView.vue'
 import StepView from './components/StepView.vue'
+import { frameCSV } from './export'
 import { stamp } from './format'
-import { mathCsvName } from './math'
-import { connect, display, disconnect, frame, init, lastError, mathTrace, readGen, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
+import { scopeOf } from './record'
+import { connect, display, disconnect, frame, init, lastError, mathTrace, readGen, rec, recFrames, scope, set, setTrigLevel, status, sweeping as sweepRunning } from './state'
 
 type View = 'scope' | 'dmm' | 'console'
 const view = ref<View>('scope')
@@ -42,6 +44,9 @@ watch(curveShown, (v) => localStorage.setItem(CURVE_KEY, v ? '1' : '0'))
 const THD_KEY = 'owon.thdShown'
 const thdShown = ref(localStorage.getItem(THD_KEY) === '1')
 watch(thdShown, (v) => localStorage.setItem(THD_KEY, v ? '1' : '0'))
+const REC_KEY = 'owon.recShown'
+const recShown = ref(localStorage.getItem(REC_KEY) === '1')
+watch(recShown, (v) => localStorage.setItem(REC_KEY, v ? '1' : '0'))
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -55,6 +60,8 @@ const online = computed(() => status.value.connected)
 const sweeping = sweepRunning
 const controls = computed(() => online.value && !sweeping.value)
 const running = computed(() => scope.run !== 'STOP')
+// A recorded frame is drawn with the settings it was taken with.
+const shownScope = computed(() => (rec.viewing && frame.value ? scopeOf(frame.value, scope) : scope))
 
 const RUN_STATES: Record<string, [string, string]> = {
   trig: ['Синхронизирован', 'ok'], auto: ['Авто', 'ok'], ready: ['Ждёт запуска', 'warn'],
@@ -81,19 +88,11 @@ watch(frozen, (f) => call('SetAcquire', !f), { immediate: true })
 async function exportCSV() {
   const f = frame.value
   if (!f) return
-  const chans = f.channels.filter((c) => c.on && c.raw?.length)
-  const n = Math.max(...chans.map((c) => c.raw!.length))
-  const mt = mathTrace.value
-  const head = ['t_s', ...chans.map((c) => `${c.name}_V`), ...(mt ? [`M_${mathCsvName(display.math)}`] : [])]
-  const lines = [`# OWON HDS272S, ${f.timeScale}/div, ${f.sampleRate}; time from trigger point`, head.join(',')]
-  for (let i = 0; i < n; i++) {
-    // A positive offset puts the trigger point hOffset divisions left of centre.
-    const t = ((i / (n - 1)) * 12 - 6 + f.hOffset) * f.timeDiv
-    const m = mt ? [mt.v[i].toPrecision(5)] : []
-    lines.push([t.toPrecision(6), ...chans.map((c) => (((c.raw![i] - c.offset) / 25) * c.voltsPerDiv).toPrecision(5)), ...m].join(','))
-  }
-  await save(`hds272s_${stamp()}.csv`, new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }))
+  const csv = frameCSV(f, mathTrace.value?.v ?? null, display.math)
+  await save(`hds272s_${stamp()}.csv`, new Blob([csv], { type: 'text/csv' }))
 }
+
+const screenPNG = async () => (await screen.value?.toPNG()) ?? null
 
 async function exportPNG() {
   const b = await screen.value?.toPNG()
@@ -176,8 +175,11 @@ onMounted(() => {
           <button :class="{ primary: stepShown }" title="Переходная характеристика: меандр на входе цепи и CH1, выход на CH2" @click="stepShown = !stepShown">Переходная</button>
           <button :class="{ primary: impShown }" title="Импеданс детали через эталонный резистор: C, L, R, ESR" @click="impShown = !impShown">Импеданс</button>
           <button :class="{ primary: curveShown }" title="Тестер компонентов: вольт-амперная характеристика детали через эталонный резистор" @click="curveShown = !curveShown">ВАХ</button>
+          <button :class="{ primary: recShown }" title="Запись и просмотр кадров, ловушка редких событий" @click="recShown = !recShown">Запись</button>
           <div class="info">
-            <span v-if="frame" class="state" :class="runState[1]">{{ runState[0] }}</span>
+            <span v-if="rec.viewing" class="state warn" title="На экране записанный кадр, а не живой сигнал">Запись {{ rec.index + 1 }}/{{ recFrames.length }}</span>
+            <span v-if="rec.recording" class="state rec">● запись {{ recFrames.length }}</span>
+            <span v-if="frame && !rec.viewing" class="state" :class="runState[1]">{{ runState[0] }}</span>
             <span v-if="frame" class="mono">{{ frame.fps.toFixed(1) }} кадр/с</span>
             <span v-if="frame?.averaged" class="mono" :title="`Усреднение: в среднем ${frame.averaged} кадров из ${display.avg}`">усредн. {{ frame.averaged }}/{{ display.avg }}</span>
             <span v-if="frame?.sampleRate" class="mono dim">{{ frame.sampleRate }}</span>
@@ -186,8 +188,8 @@ onMounted(() => {
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="scope" :stretch="fftShown || bodeShown || thdShown || stepShown || impShown || curveShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
-          <div v-if="!online" class="overlay">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="shownScope" :stretch="fftShown || bodeShown || thdShown || stepShown || impShown || curveShown || recShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+          <div v-if="!online && !rec.viewing" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
               <p v-if="status.error || lastError" class="err-text">{{ status.error || lastError }}</p>
@@ -206,6 +208,7 @@ onMounted(() => {
         <StepView v-if="stepShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
         <ImpedanceView v-if="impShown" :frame="frame" :online="controls" />
         <CurveView v-if="curveShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
+        <RecordView v-if="recShown" :online="controls" :png="screenPNG" @save="save" />
         <MeasureStrip :frame="frame" />
       </div>
       <aside>
@@ -282,6 +285,7 @@ nav { display: flex; gap: 2px; flex: 1 0 auto; }
 .state { padding: 2px 8px; border-radius: 4px; background: var(--panel-2); }
 .state.ok { color: var(--ok); }
 .state.warn { color: var(--warn); }
+.state.rec { color: var(--err); }
 .saved { font-size: 12px; color: var(--ok); max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas { flex: 1; }
 .spectrum { flex: 1; }

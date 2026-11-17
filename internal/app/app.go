@@ -39,12 +39,15 @@ type App struct {
 	emit Emitter
 	// SaveDialog asks where to save a file; nil when the shell has no dialogs.
 	SaveDialog func(defaultName string) (string, error)
+	// FolderDialog asks for a folder; nil when the shell has no dialogs.
+	FolderDialog func() (string, error)
 
-	mu     sync.Mutex
-	status Status
-	client *hds.Client
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu      sync.Mutex
+	status  Status
+	saveDir string // chosen with ChooseFolder; WriteFile writes only there
+	client  *hds.Client
+	cancel  context.CancelFunc
+	done    chan struct{}
 
 	queue   *queue
 	view    atomic.Value // "scope", "dmm" or "console"

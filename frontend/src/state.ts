@@ -1,9 +1,10 @@
-import { computed, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, reactive, ref, shallowRef, triggerRef, watch } from 'vue'
 import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import { fitMath, mathOf, type MathOp } from './math'
 import type { PersistMode } from './persist'
+import { MAX_FRAMES, type RecFrame } from './record'
 import { isReference, refFromFrame, type Reference } from './ref'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
@@ -44,6 +45,36 @@ watch(() => display.avg, sendAverage)
 
 // Bumped to wipe the persistence traces.
 export const persistEpoch = ref(0)
+
+// Recording of frames and its playback. While a recording is shown, the
+// live frames still update the settings, but not the screen.
+export const rec = reactive({ recording: false, viewing: false, index: 0 })
+export const recFrames = shallowRef<RecFrame[]>([])
+let liveFrame: Frame | null = null
+
+export function recordFrame(f: Frame) {
+  if (recFrames.value.length >= MAX_FRAMES) {
+    rec.recording = false
+    return
+  }
+  recFrames.value.push({ t: Date.now(), frame: f })
+  triggerRef(recFrames)
+}
+
+export function showRecorded(i: number) {
+  const r = recFrames.value
+  if (!r.length) return
+  rec.index = Math.max(0, Math.min(r.length - 1, i))
+  rec.viewing = true
+  rec.recording = false
+  frame.value = r[rec.index].frame
+}
+
+export function stopViewing() {
+  if (!rec.viewing) return
+  rec.viewing = false
+  frame.value = liveFrame
+}
 
 // fitMathToScreen picks the scale and the offset that show the whole math
 // trace.
@@ -226,14 +257,17 @@ export function init() {
   on('status', (s: Status) => {
     const was = status.value.connected
     status.value = s
-    if (!s.connected) frame.value = null
+    if (!s.connected) liveFrame = null
+    if (!s.connected && !rec.viewing) frame.value = null
     // Also after an automatic reconnect: the generator may have been changed
     // on the device meanwhile.
     else if (!was) readGen().catch(() => {})
   })
   on('frame', (f: Frame) => {
     applyFrame(f)
-    frame.value = f
+    liveFrame = f
+    if (rec.recording) recordFrame(f)
+    if (!rec.viewing) frame.value = f
   })
   on('sweep', (e: SweepEvent) => {
     const s = sweepOf(e.mode)

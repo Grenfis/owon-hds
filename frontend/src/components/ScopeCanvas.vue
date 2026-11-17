@@ -651,7 +651,11 @@ function move(e: MouseEvent) {
   schedule()
 }
 
+// toPNG draws the frame there is now before taking the picture, so that it
+// does not wait for the next animation frame, which a hidden window never
+// gets.
 function toPNG(): Promise<Blob | null> {
+  draw()
   return new Promise((res) => canvas.value!.toBlob(res, 'image/png'))
 }
 defineExpose({ toPNG })

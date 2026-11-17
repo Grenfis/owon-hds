@@ -219,7 +219,7 @@ onMounted(() => {
       <GenPanel class="genpanel" :disabled="!controls" />
     </main>
 
-    <main v-else-if="view === 'dmm'" class="page"><DmmView :disabled="!online" /></main>
+    <main v-else-if="view === 'dmm'" class="page"><DmmView :disabled="!online" @save="save" /></main>
     <main v-else class="page"><ConsoleView /></main>
   </div>
 </template>

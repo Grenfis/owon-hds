@@ -1,6 +1,7 @@
 import { computed, reactive, ref, shallowRef, triggerRef, watch } from 'vue'
 import { call, on } from './api'
 import { DEFAULT_CURSORS, type Cursors } from './cursors'
+import { MAX_READINGS, type Side } from './dmmlog'
 import { TIMEBASES, closest, probeFactor, vdivOptions } from './format'
 import { sweepAt, type GenSweep } from './gensweep'
 import { fitMath, mathOf, type MathOp } from './math'
@@ -8,6 +9,7 @@ import type { PersistMode } from './persist'
 import { DISPLAY_KEYS, changes, parsePresets, snapshot, type Preset } from './presets'
 import { MAX_FRAMES, type RecFrame } from './record'
 import { isReference, refFromFrame, type Reference } from './ref'
+import { push, type Running } from './stats'
 import type { Frame, GenState, LogEntry, Status, SweepConfig, SweepEvent, SweepPoint } from './types'
 
 // Screen cursors, kept between runs.
@@ -222,6 +224,45 @@ export const sweep = newSweep()
 export const distortion = newSweep()
 const sweepOf = (mode?: string) => (mode === 'amp' ? distortion : sweep)
 export const sweeping = computed(() => sweep.state === 'running' || distortion.state === 'running')
+
+// The multimeter log, of one mode. Readings come only while the multimeter
+// tab is open; the log stays when another tab is opened.
+export interface DmmLog {
+  mode: string
+  t: number[] // ms since 1970
+  v: number[]
+  stats?: Running
+  side: Side // where the last reading was against the limits
+  exits: number // times the readings left the limits
+  lastExit: number
+}
+export const dmmLog = shallowRef<DmmLog>({ mode: '', t: [], v: [], side: null, exits: 0, lastExit: 0 })
+export const dmmLogging = ref(true)
+
+export function clearDmmLog(mode: string) {
+  dmmLog.value = { mode, t: [], v: [], side: null, exits: 0, lastExit: 0 }
+}
+
+// logReading adds a reading, unless the log is paused or full, and tells
+// whether it has just left the limits. The limits are watched while paused
+// too.
+export function logReading(t: number, v: number, s: Side): boolean {
+  const l = dmmLog.value
+  const left = s != null && s !== l.side
+  l.side = s
+  if (left) {
+    l.exits++
+    l.lastExit = t
+  }
+  if (dmmLogging.value && l.t.length >= MAX_READINGS) dmmLogging.value = false
+  if (dmmLogging.value) {
+    l.t.push(t)
+    l.v.push(v)
+    l.stats = push(l.stats, v)
+  }
+  triggerRef(dmmLog)
+  return left
+}
 
 // Presets, kept between runs.
 const PRESETS_KEY = 'owon.presets'

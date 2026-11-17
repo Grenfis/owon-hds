@@ -27,27 +27,30 @@ const frozen = ref(false)
 const connecting = ref<'' | 'usb' | 'sim'>('')
 const screen = ref<InstanceType<typeof ScopeCanvas>>()
 
-const FFT_KEY = 'owon.fftShown'
-const fftShown = ref(localStorage.getItem(FFT_KEY) === '1')
-watch(fftShown, (v) => localStorage.setItem(FFT_KEY, v ? '1' : '0'))
-const BODE_KEY = 'owon.bodeShown'
-const bodeShown = ref(localStorage.getItem(BODE_KEY) === '1')
-watch(bodeShown, (v) => localStorage.setItem(BODE_KEY, v ? '1' : '0'))
-const STEP_KEY = 'owon.stepShown'
-const stepShown = ref(localStorage.getItem(STEP_KEY) === '1')
-watch(stepShown, (v) => localStorage.setItem(STEP_KEY, v ? '1' : '0'))
-const IMP_KEY = 'owon.impShown'
-const impShown = ref(localStorage.getItem(IMP_KEY) === '1')
-watch(impShown, (v) => localStorage.setItem(IMP_KEY, v ? '1' : '0'))
-const CURVE_KEY = 'owon.curveShown'
-const curveShown = ref(localStorage.getItem(CURVE_KEY) === '1')
-watch(curveShown, (v) => localStorage.setItem(CURVE_KEY, v ? '1' : '0'))
-const THD_KEY = 'owon.thdShown'
-const thdShown = ref(localStorage.getItem(THD_KEY) === '1')
-watch(thdShown, (v) => localStorage.setItem(THD_KEY, v ? '1' : '0'))
-const REC_KEY = 'owon.recShown'
-const recShown = ref(localStorage.getItem(REC_KEY) === '1')
-watch(recShown, (v) => localStorage.setItem(REC_KEY, v ? '1' : '0'))
+// One panel under the screen at a time: each is a mode of its own that
+// sets up the generator and the scope its way, and several at once squeeze
+// the screen to nothing. Pressing the open one closes it.
+const PANELS = [
+  { id: 'fft', label: 'Спектр', title: 'Спектр сигнала (FFT) под осциллограммой' },
+  { id: 'bode', label: 'АЧХ', title: 'АЧХ и ФЧХ цепи: генератор перебирает частоты, CH1 на входе цепи, CH2 на выходе' },
+  { id: 'thd', label: 'КНИ', title: 'КНИ от размаха: генератор перебирает размахи синуса, CH1 на входе цепи, CH2 на выходе' },
+  { id: 'step', label: 'Переходная', title: 'Переходная характеристика: меандр на входе цепи и CH1, выход на CH2' },
+  { id: 'imp', label: 'Импеданс', title: 'Импеданс детали через эталонный резистор: C, L, R, ESR' },
+  { id: 'curve', label: 'ВАХ', title: 'Тестер компонентов: вольт-амперная характеристика детали через эталонный резистор' },
+  { id: 'rec', label: 'Запись', title: 'Запись и просмотр кадров, ловушка редких событий' },
+]
+const PANEL_KEY = 'owon.panel'
+// Before, each panel had its own key; the first one open is kept.
+const panel = ref(
+  localStorage.getItem(PANEL_KEY) ?? PANELS.find((p) => localStorage.getItem(`owon.${p.id}Shown`) === '1')?.id ?? '',
+)
+watch(panel, (v) => localStorage.setItem(PANEL_KEY, v))
+
+// A sweep keeps its panel open: the panel holds its Stop button.
+function togglePanel(id: string) {
+  if (sweeping.value) return
+  panel.value = panel.value === id ? '' : id
+}
 
 const TABS: { id: View; label: string }[] = [
   { id: 'scope', label: 'Осциллограф и генератор' },
@@ -170,13 +173,18 @@ onMounted(() => {
           <button :class="{ primary: frozen }" :disabled="!controls" title="Не запрашивать новые кадры; прибор продолжает работать" @click="frozen = !frozen">
             {{ frozen ? 'Экран заморожен' : 'Заморозить экран' }}
           </button>
-          <button :class="{ primary: fftShown }" title="Спектр сигнала (FFT) под осциллограммой" @click="fftShown = !fftShown">Спектр</button>
-          <button :class="{ primary: bodeShown }" title="АЧХ и ФЧХ цепи: генератор перебирает частоты, CH1 на входе цепи, CH2 на выходе" @click="bodeShown = !bodeShown">АЧХ</button>
-          <button :class="{ primary: thdShown }" title="КНИ от размаха: генератор перебирает размахи синуса, CH1 на входе цепи, CH2 на выходе" @click="thdShown = !thdShown">КНИ</button>
-          <button :class="{ primary: stepShown }" title="Переходная характеристика: меандр на входе цепи и CH1, выход на CH2" @click="stepShown = !stepShown">Переходная</button>
-          <button :class="{ primary: impShown }" title="Импеданс детали через эталонный резистор: C, L, R, ESR" @click="impShown = !impShown">Импеданс</button>
-          <button :class="{ primary: curveShown }" title="Тестер компонентов: вольт-амперная характеристика детали через эталонный резистор" @click="curveShown = !curveShown">ВАХ</button>
-          <button :class="{ primary: recShown }" title="Запись и просмотр кадров, ловушка редких событий" @click="recShown = !recShown">Запись</button>
+          <div class="panels">
+            <button
+              v-for="p in PANELS"
+              :key="p.id"
+              :class="{ on: panel === p.id }"
+              :title="panel === p.id ? `${p.title}. Нажмите ещё раз, чтобы закрыть` : p.title"
+              :disabled="sweeping && panel !== p.id"
+              @click="togglePanel(p.id)"
+            >
+              {{ p.label }}
+            </button>
+          </div>
           <PresetMenu :online="controls" @save="save" />
           <div class="info">
             <span v-if="rec.viewing" class="state warn" title="На экране записанный кадр, а не живой сигнал">Запись {{ rec.index + 1 }}/{{ recFrames.length }}</span>
@@ -190,7 +198,7 @@ onMounted(() => {
           <button class="ghost" :disabled="!frame" title="Сохранить точки осциллограммы в CSV" @click="exportCSV">CSV</button>
           <button class="ghost" :disabled="!frame" title="Сохранить картинку экрана" @click="exportPNG">PNG</button>
         </div>
-        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="shownScope" :stretch="fftShown || bodeShown || thdShown || stepShown || impShown || curveShown || recShown" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
+        <ScopeCanvas ref="screen" class="canvas" :frame="frame" :scope="shownScope" :stretch="!!panel" @offset="(ch, d) => set(`${ch}.offset`, d.toFixed(2))" @level="setTrigLevel">
           <div v-if="!online && !rec.viewing" class="overlay">
             <div class="card">
               <h2>{{ status.reconnecting ? 'Связь потеряна' : 'Нет связи с прибором' }}</h2>
@@ -204,13 +212,13 @@ onMounted(() => {
             </div>
           </div>
         </ScopeCanvas>
-        <SpectrumView v-if="fftShown" class="spectrum" :frame="frame" @save="save" />
-        <BodeView v-if="bodeShown" class="spectrum" :online="online" @save="save" />
-        <DistortionView v-if="thdShown" class="spectrum" :online="online" @save="save" />
-        <StepView v-if="stepShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
-        <ImpedanceView v-if="impShown" :frame="frame" :online="controls" />
-        <CurveView v-if="curveShown" class="spectrum" :frame="frame" :online="controls" @save="save" />
-        <RecordView v-if="recShown" :online="controls" :png="screenPNG" @save="save" />
+        <SpectrumView v-if="panel === 'fft'" class="spectrum" :frame="frame" @save="save" />
+        <BodeView v-else-if="panel === 'bode'" class="spectrum" :online="online" @save="save" />
+        <DistortionView v-else-if="panel === 'thd'" class="spectrum" :online="online" @save="save" />
+        <StepView v-else-if="panel === 'step'" class="spectrum" :frame="frame" :online="controls" @save="save" />
+        <ImpedanceView v-else-if="panel === 'imp'" :frame="frame" :online="controls" />
+        <CurveView v-else-if="panel === 'curve'" class="spectrum" :frame="frame" :online="controls" @save="save" />
+        <RecordView v-else-if="panel === 'rec'" :online="controls" :png="screenPNG" @save="save" />
         <MeasureStrip :frame="frame" />
       </div>
       <aside>
@@ -280,6 +288,17 @@ nav { display: flex; gap: 2px; flex: 1 0 auto; }
 .center { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .toolbar button, .info > span { white-space: nowrap; }
+.panels {
+  display: inline-flex;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 2px;
+}
+.panels button { border: 0; background: transparent; padding: 4px 10px; border-radius: 5px; color: var(--muted); }
+.panels button:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.panels button.on { background: var(--accent-bg); color: #cfe0ff; box-shadow: inset 0 0 0 1px #2f4a78; }
 .run { min-width: 86px; font-weight: 600; }
 .run.running { background: var(--err-bg); border-color: #6b2a2f; color: #ffd0d0; }
 .run.stopped { background: var(--ok-bg); border-color: #23603b; color: #c9f7d9; }
